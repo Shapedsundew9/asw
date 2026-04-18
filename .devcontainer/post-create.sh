@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'echo "Dev Container setup failed. Review the command output above." >&2' ERR
+trap 'echo "Dev Container setup failed at line $LINENO while running: $BASH_COMMAND" >&2' ERR
 
 echo "Installing apt dependencies..."
 sudo apt-get update
