@@ -37,7 +37,7 @@ class GeminiCLIBackend:
         logger.debug("Gemini CLI combined prompt (%d chars):\n%s", len(combined_prompt), combined_prompt)
         logger.debug("Timeout: %d seconds, model: %s", self._timeout, self._model or "(default)")
 
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -54,12 +54,12 @@ class GeminiCLIBackend:
             msg = f"Gemini CLI exited with code {result.returncode}:\n{result.stderr.strip()}"
             raise RuntimeError(msg)
 
-        extracted = self._extract_text(result.stdout)
+        extracted = self.extract_text(result.stdout)
         logger.debug("Gemini extracted response (%d chars):\n%s", len(extracted), extracted)
         return extracted
 
     @staticmethod
-    def _extract_text(raw: str) -> str:
+    def extract_text(raw: str) -> str:
         """Extract the model response text from Gemini JSON output."""
         try:
             parsed = json.loads(raw)
@@ -71,18 +71,18 @@ class GeminiCLIBackend:
                     if isinstance(item, dict) and "response" in item:
                         return str(item["response"])
 
-            for data in GeminiCLIBackend._iter_json_lines(raw):
+            for data in GeminiCLIBackend.iter_json_lines(raw):
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])
             return raw
-        except json.JSONDecodeError, KeyError:
-            for data in GeminiCLIBackend._iter_json_lines(raw):
+        except (json.JSONDecodeError, KeyError):
+            for data in GeminiCLIBackend.iter_json_lines(raw):
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])
             return raw
 
     @staticmethod
-    def _iter_json_lines(raw: str) -> Iterable[dict | list | str | int | float | bool | None]:
+    def iter_json_lines(raw: str) -> Iterable[dict | list | str | int | float | bool | None]:
         """Yield JSON values parsed from non-empty line chunks.
 
         Gemini may emit newline-delimited JSON in some modes, so this helper keeps

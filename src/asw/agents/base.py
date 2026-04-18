@@ -63,6 +63,6 @@ class Agent:
 
         user_prompt = "\n\n".join(parts)
         logger.debug("Agent %s user prompt (%d chars):\n%s", self.name, len(user_prompt), user_prompt)
-        response = self.llm.invoke(system_prompt, user_prompt)  # pylint: disable=assignment-from-no-return
+        response = self.llm.invoke(system_prompt, user_prompt)
         logger.debug("Agent %s LLM response (%d chars):\n%s", self.name, len(response), response)
         return response

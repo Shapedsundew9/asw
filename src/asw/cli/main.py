@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Lazy import to keep CLI startup fast.
-    from asw.orchestrator import run_pipeline  # noqa: PLC0415
+    from asw.orchestrator import run_pipeline
 
     return run_pipeline(vision_path=vision_path, workdir=workdir, no_commit=args.no_commit, debug=bool(args.debug))
 

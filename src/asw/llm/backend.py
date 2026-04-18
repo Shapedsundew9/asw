@@ -15,6 +15,7 @@ class LLMBackend(Protocol):
 
     def invoke(self, system_prompt: str, user_prompt: str) -> str:
         """Send prompts to the model and return its text response."""
+        return ""
 
 
 def get_backend(name: str = "gemini") -> LLMBackend:
@@ -33,7 +34,7 @@ def get_backend(name: str = "gemini") -> LLMBackend:
             msg = "The 'gemini' CLI was not found on $PATH. Install it with: npm install -g @google/gemini-cli"
             raise RuntimeError(msg)
 
-        from asw.llm.gemini import GeminiCLIBackend  # noqa: PLC0415
+        from asw.llm.gemini import GeminiCLIBackend
 
         logger.debug("GeminiCLIBackend instantiated")
         return GeminiCLIBackend()

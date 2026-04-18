@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from asw.agents.base import Agent
@@ -28,86 +29,91 @@ def _safe_join(items: list[str] | str) -> str:
     return ", ".join(items)
 
 
+def _render_tech_stack(data: dict) -> list[str]:
+    """Render the tech-stack section of the architecture Markdown."""
+    ts = data.get("tech_stack", {})
+    frameworks = _safe_join(ts.get("frameworks", [])) or "None"
+    tools = _safe_join(ts.get("tools", [])) or "None"
+    return [
+        "### Tech Stack",
+        f"- **Language:** {ts.get('language', 'N/A')} ({ts.get('version', 'N/A')})",
+        f"- **Frameworks:** {frameworks}",
+        f"- **Tools:** {tools}",
+        "",
+    ]
+
+
+def _render_components(data: dict) -> list[str]:
+    """Render the components table of the architecture Markdown."""
+    lines = ["### Components", "| Name | Responsibility | Interfaces |", "| --- | --- | --- |"]
+    for comp in data.get("components", []):
+        iface = _safe_join(comp.get("interfaces", [])) or "None"
+        lines.append(f"| {comp.get('name', 'N/A')} | {comp.get('responsibility', 'N/A')} | {iface} |")
+    lines.append("")
+    return lines
+
+
+def _render_data_models(data: dict) -> list[str]:
+    """Render the data-models section of the architecture Markdown."""
+    lines: list[str] = ["### Data Models"]
+    for model in data.get("data_models", []):
+        lines.append(f"#### {model.get('name', 'N/A')}")
+        lines.extend(["| Field | Type |", "| --- | --- |"])
+        for field in model.get("fields", []):
+            lines.append(f"| {field.get('name', 'N/A')} | {field.get('type', 'N/A')} |")
+        lines.append("")
+    return lines
+
+
+def _render_api_contracts(data: dict) -> list[str]:
+    """Render the API-contracts table of the architecture Markdown."""
+    lines = ["### API Contracts", "| Endpoint | Method | Description |", "| --- | --- | --- |"]
+    for api in data.get("api_contracts", []):
+        lines.append(f"| {api.get('endpoint', 'N/A')} | {api.get('method', 'N/A')} | {api.get('description', 'N/A')} |")
+    lines.append("")
+    return lines
+
+
+def _render_deployment(data: dict) -> list[str]:
+    """Render the deployment section of the architecture Markdown."""
+    dep = data.get("deployment", {})
+    reqs = _safe_join(dep.get("requirements", [])) or "None"
+    return [
+        "### Deployment",
+        f"- **Platform:** {dep.get('platform', 'N/A')}",
+        f"- **Strategy:** {dep.get('strategy', 'N/A')}",
+        f"- **Requirements:** {reqs}",
+        "",
+    ]
+
+
 def _render_architecture_markdown(json_str: str, mermaid_str: str) -> str:
     """Render a human-readable Markdown from architecture JSON and Mermaid."""
-    # pylint: disable=too-many-locals,too-many-statements
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
-        # Fallback if JSON is somehow invalid after linting (unlikely)
         return (
             "# System Architecture\n\n"
             "> **Warning:** Technical specification could not be parsed.\n\n"
             f"```mermaid\n{mermaid_str}\n```"
         )
 
-    lines = ["# System Architecture", ""]
-    lines.append(
-        "> **Source of Truth:** The technical specification for this architecture is stored in `architecture.json`."
-    )
-    lines.append("")
-    lines.append("## Visual Overview")
-    lines.append(f"```mermaid\n{mermaid_str}\n```")
-    lines.append("")
-
-    # Project Info
-    name = data.get("project_name", "N/A")
-    lines.append(f"## Project: {name}")
-    lines.append("")
-
-    # Tech Stack
-    ts = data.get("tech_stack", {})
-    lines.append("### Tech Stack")
-    lines.append(f"- **Language:** {ts.get('language', 'N/A')} ({ts.get('version', 'N/A')})")
-    frameworks = _safe_join(ts.get("frameworks", [])) or "None"
-    lines.append(f"- **Frameworks:** {frameworks}")
-    tools = _safe_join(ts.get("tools", [])) or "None"
-    lines.append(f"- **Tools:** {tools}")
-    lines.append("")
-
-    # Components
-    lines.append("### Components")
-    lines.append("| Name | Responsibility | Interfaces |")
-    lines.append("| --- | --- | --- |")
-    for comp in data.get("components", []):
-        name = comp.get("name", "N/A")
-        resp = comp.get("responsibility", "N/A")
-        iface = _safe_join(comp.get("interfaces", [])) or "None"
-        lines.append(f"| {name} | {resp} | {iface} |")
-    lines.append("")
-
-    # Data Models
-    lines.append("### Data Models")
-    for model in data.get("data_models", []):
-        mname = model.get("name", "N/A")
-        lines.append(f"#### {mname}")
-        lines.append("| Field | Type |")
-        lines.append("| --- | --- |")
-        for field in model.get("fields", []):
-            fname = field.get("name", "N/A")
-            ftype = field.get("type", "N/A")
-            lines.append(f"| {fname} | {ftype} |")
-        lines.append("")
-
-    # API Contracts
-    lines.append("### API Contracts")
-    lines.append("| Endpoint | Method | Description |")
-    lines.append("| --- | --- | --- |")
-    for api in data.get("api_contracts", []):
-        ep = api.get("endpoint", "N/A")
-        meth = api.get("method", "N/A")
-        desc = api.get("description", "N/A")
-        lines.append(f"| {ep} | {meth} | {desc} |")
-    lines.append("")
-
-    # Deployment
-    dep = data.get("deployment", {})
-    lines.append("### Deployment")
-    lines.append(f"- **Platform:** {dep.get('platform', 'N/A')}")
-    lines.append(f"- **Strategy:** {dep.get('strategy', 'N/A')}")
-    reqs = _safe_join(dep.get("requirements", [])) or "None"
-    lines.append(f"- **Requirements:** {reqs}")
-    lines.append("")
+    lines = [
+        "# System Architecture",
+        "",
+        "> **Source of Truth:** The technical specification for this architecture is stored in `architecture.json`.",
+        "",
+        "## Visual Overview",
+        f"```mermaid\n{mermaid_str}\n```",
+        "",
+        f"## Project: {data.get('project_name', 'N/A')}",
+        "",
+    ]
+    lines.extend(_render_tech_stack(data))
+    lines.extend(_render_components(data))
+    lines.extend(_render_data_models(data))
+    lines.extend(_render_api_contracts(data))
+    lines.extend(_render_deployment(data))
 
     return "\n".join(lines)
 
@@ -174,7 +180,7 @@ def _lint_architecture(content: str) -> tuple[list[str], str | None, str | None]
 def _agent_loop(
     agent: Agent,
     context: dict[str, str],
-    lint_fn: object,  # callable
+    lint_fn: Callable[[str], list[str]],
     phase_name: str,
     *,
     founder_feedback: str | None = None,
@@ -190,7 +196,7 @@ def _agent_loop(
         logger.debug("Agent %s raw output (%d chars):\n%s", agent.name, len(output), output)
         print("   Response received.")
 
-        errors = lint_fn(output)  # type: ignore[operator]
+        errors = lint_fn(output)
         if not errors:
             print(f"   Lint passed for {phase_name}.")
             return output
@@ -248,9 +254,35 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     return prd_content
 
 
-def run_pipeline(  # pylint: disable=too-many-locals,too-many-statements
-    *, vision_path: Path, workdir: Path, no_commit: bool = False, debug: bool = False
-) -> int:
+def _run_architecture_phase(company: Path, vision_content: str, prd_content: str, llm: LLMBackend) -> None:
+    """Run the CTO Architecture phase including founder review loop."""
+    cto = Agent(name="CTO", role_file=company / "roles" / "cto.md", llm=llm)
+    arch_context = {"vision": vision_content, "prd": prd_content}
+
+    raw_arch = _agent_loop(
+        cto,
+        arch_context,
+        lambda c: _lint_architecture(c)[0],
+        "Architecture",
+    )
+    _write_architecture(raw_arch, company)
+
+    arch_md_path = company / "artifacts" / "architecture.md"
+    choice, feedback = founder_review("Architecture", arch_md_path)
+    while choice in ("r", "m"):
+        founder_feedback = feedback if choice == "m" else None
+        raw_arch = _agent_loop(
+            cto,
+            arch_context,
+            lambda c: _lint_architecture(c)[0],
+            "Architecture",
+            founder_feedback=founder_feedback,
+        )
+        _write_architecture(raw_arch, company)
+        choice, feedback = founder_review("Architecture", arch_md_path)
+
+
+def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False, debug: bool = False) -> int:
     """Execute the full V0.1 SDLC pipeline.
 
     Returns 0 on success.
@@ -296,30 +328,7 @@ def run_pipeline(  # pylint: disable=too-many-locals,too-many-statements
         print("  (skipping git commit – --no-commit)")
 
     # ── Phase B: CTO → Architecture ──────────────────────────────────────
-    cto = Agent(name="CTO", role_file=company / "roles" / "cto.md", llm=llm)
-    arch_context = {"vision": vision_content, "prd": prd_content}
-
-    raw_arch = _agent_loop(
-        cto,
-        arch_context,
-        lambda c: _lint_architecture(c)[0],
-        "Architecture",
-    )
-    _write_architecture(raw_arch, company)
-
-    arch_md_path = company / "artifacts" / "architecture.md"
-    choice, feedback = founder_review("Architecture", arch_md_path)
-    while choice in ("r", "m"):
-        founder_feedback = feedback if choice == "m" else None
-        raw_arch = _agent_loop(
-            cto,
-            arch_context,
-            lambda c: _lint_architecture(c)[0],
-            "Architecture",
-            founder_feedback=founder_feedback,
-        )
-        _write_architecture(raw_arch, company)
-        choice, feedback = founder_review("Architecture", arch_md_path)
+    _run_architecture_phase(company, vision_content, prd_content, llm)
 
     if not no_commit:
         try:

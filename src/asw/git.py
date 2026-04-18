@@ -16,7 +16,7 @@ class GitError(RuntimeError):
 def _run_git(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run a git command inside *workdir* and return the result."""
     logger.debug("Running: git %s (cwd=%s)", " ".join(args), workdir)
-    result = subprocess.run(  # noqa: S603, S607
+    result = subprocess.run(
         ["git", *args],
         cwd=workdir,
         capture_output=True,
@@ -54,7 +54,7 @@ def commit_state(workdir: Path, phase_name: str) -> str:
     message = f"[asw] Phase: {phase_name} completed"
 
     # Check whether there are staged changes before committing.
-    diff_result = subprocess.run(  # noqa: S603, S607
+    diff_result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=workdir,
         capture_output=True,
