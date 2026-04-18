@@ -164,9 +164,15 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # Initialise a git repo so commit_state works.
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@test.com"], check=True, capture_output=True
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
     )
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
 
     mock_llm = _make_mock_llm()
 
@@ -217,9 +223,15 @@ def _setup_git_repo(tmp_path: Path) -> None:
     """Initialise a minimal git repo."""
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(tmp_path), "config", "user.email", "test@test.com"], check=True, capture_output=True
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
     )
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_is_phase_done_returns_false_when_no_state() -> None:
@@ -229,20 +241,20 @@ def test_is_phase_done_returns_false_when_no_state() -> None:
 
 def test_is_phase_done_returns_false_when_phase_missing() -> None:
     """_is_phase_done returns False when phase not in completed_phases."""
-    state = {"completed_phases": {}}
+    state: dict = {"completed_phases": {}}
     assert _is_phase_done(state, "prd", []) is False
 
 
 def test_is_phase_done_returns_false_when_artifact_missing(tmp_path: Path) -> None:
     """_is_phase_done returns False when artifact file doesn't exist."""
-    state = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
+    state: dict = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
     missing = tmp_path / "nonexistent.md"
     assert _is_phase_done(state, "prd", [missing]) is False
 
 
 def test_is_phase_done_returns_true(tmp_path: Path) -> None:
     """_is_phase_done returns True when phase completed and artifacts exist."""
-    state = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
+    state: dict = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
     artifact = tmp_path / "prd.md"
     artifact.write_text("content")
     assert _is_phase_done(state, "prd", [artifact]) is True

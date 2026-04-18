@@ -9,6 +9,10 @@ description = "The Agentic Software Organization"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
+dependencies = [
+    "rich",
+    "questionary",
+]
 
 [project.scripts]
 asw = "asw.cli.main:main"

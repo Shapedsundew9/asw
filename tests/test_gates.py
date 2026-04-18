@@ -13,7 +13,8 @@ def test_approve(tmp_path: Path) -> None:
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nSome content.\n")
 
-    with patch("builtins.input", return_value="a"):
+    with patch("asw.gates.questionary.select") as mock_select:
+        mock_select.return_value.ask.return_value = "a"
         choice, feedback = founder_review("Test Phase", artifact)
 
     assert choice == "a"
@@ -25,7 +26,8 @@ def test_reject(tmp_path: Path) -> None:
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
-    with patch("builtins.input", return_value="r"):
+    with patch("asw.gates.questionary.select") as mock_select:
+        mock_select.return_value.ask.return_value = "r"
         choice, feedback = founder_review("Test Phase", artifact)
 
     assert choice == "r"
@@ -37,21 +39,27 @@ def test_modify(tmp_path: Path) -> None:
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
-    responses = iter(["m", "Fix the intro section", ""])
-    with patch("builtins.input", side_effect=responses):
+    with (
+        patch("asw.gates.questionary.select") as mock_select,
+        patch("asw.gates.questionary.text") as mock_text,
+    ):
+        mock_select.return_value.ask.return_value = "m"
+        mock_text.return_value.ask.return_value = "Fix the intro section"
         choice, feedback = founder_review("Test Phase", artifact)
 
     assert choice == "m"
     assert feedback == "Fix the intro section"
 
 
-def test_invalid_then_valid(tmp_path: Path) -> None:
-    """Test invalid inputs are rejected until a valid choice is given."""
+def test_abort(tmp_path: Path) -> None:
+    """Test abort via questionary returning None becomes stop."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
-    responses = iter(["z", "q", "a"])
-    with patch("builtins.input", side_effect=responses):
-        choice, _feedback = founder_review("Test Phase", artifact)
-
-    assert choice == "a"
+    with (
+        patch("asw.gates.sys.exit") as mock_exit,
+        patch("asw.gates.questionary.select") as mock_select,
+    ):
+        mock_select.return_value.ask.return_value = None
+        founder_review("Test Phase", artifact)
+        mock_exit.assert_called_once_with(0)

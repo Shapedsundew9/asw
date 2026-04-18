@@ -34,7 +34,11 @@ class GeminiCLIBackend:
             cmd.extend(["-m", self._model])
 
         logger.debug("Gemini CLI command: %s", cmd[:2] + ["<prompt>"] + cmd[3:])
-        logger.debug("Gemini CLI combined prompt (%d chars):\n%s", len(combined_prompt), combined_prompt)
+        logger.debug(
+            "Gemini CLI combined prompt (%d chars):\n%s",
+            len(combined_prompt),
+            combined_prompt,
+        )
         logger.debug("Timeout: %d seconds, model: %s", self._timeout, self._model or "(default)")
 
         result = subprocess.run(
@@ -82,7 +86,9 @@ class GeminiCLIBackend:
             return raw
 
     @staticmethod
-    def iter_json_lines(raw: str) -> Iterable[dict | list | str | int | float | bool | None]:
+    def iter_json_lines(
+        raw: str,
+    ) -> Iterable[dict | list | str | int | float | bool | None]:
         """Yield JSON values parsed from non-empty line chunks.
 
         Gemini may emit newline-delimited JSON in some modes, so this helper keeps

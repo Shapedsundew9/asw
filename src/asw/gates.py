@@ -6,9 +6,14 @@ import logging
 import sys
 from pathlib import Path
 
+import questionary
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+
 logger = logging.getLogger("asw.gates")
 
-_VALID_CHOICES = {"a", "r", "m", "s"}
+_console = Console()
 
 
 def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | None]:
@@ -30,46 +35,51 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
         ``"a"`` (approve), ``"r"`` (reject), ``"m"`` (modify), ``"s"`` (stop)
         and *feedback* is the Founder's text when *choice* is ``"m"``, else ``None``.
     """
-    _preview_cap = 6000
     content = artifact_path.read_text(encoding="utf-8")
-    truncated = len(content) > _preview_cap
-    preview = content[:_preview_cap]
+    md = Markdown(content)
 
-    print("\n" + "=" * 72)
-    print(f"  FOUNDER REVIEW GATE  –  Phase: {phase_name}")
-    print("=" * 72)
-    print(f"\nArtifact: {artifact_path}\n")
-    print(preview)
-    if truncated:
-        print(f"\n... ({len(content) - _preview_cap} more characters — to read in full: less {artifact_path})")
-    print("\n" + "-" * 72)
+    _console.print(
+        Panel(
+            md,
+            title=f"[bold blue]FOUNDER REVIEW GATE – Phase: {phase_name}[/bold blue]",
+            subtitle=f"[dim]Artifact: {artifact_path}[/dim]",
+            border_style="blue",
+        )
+    )
 
-    while True:
-        raw = input("[A]pprove  [R]eject  [M]odify  [S]top  > ").strip().lower()
-        if raw and raw[0] in _VALID_CHOICES:
-            choice = raw[0]
-            break
-        print("Invalid choice. Please enter A, R, M, or S.")
+    choice = questionary.select(
+        "Founder Action:",
+        choices=[
+            questionary.Choice("Approve", value="a", shortcut_key="a"),
+            questionary.Choice("Reject", value="r", shortcut_key="r"),
+            questionary.Choice("Modify", value="m", shortcut_key="m"),
+            questionary.Choice("Stop", value="s", shortcut_key="s"),
+        ],
+    ).ask()
+
+    # questionary returns None if the user aborts via Ctrl-C
+    if choice is None:
+        choice = "s"
 
     logger.debug("Founder review for %s: choice=%s", phase_name, choice)
 
     feedback: str | None = None
     if choice == "m":
-        print("Enter your feedback below.")
-        print("Type each line and press Enter. Press Enter on a BLANK LINE to submit.")
-        print("-" * 72)
-        lines: list[str] = []
-        while True:
-            line = input()
-            if not line:
-                break
-            lines.append(line)
-        print(f"──── Feedback captured ({len(lines)} line(s)) ────")
-        feedback = "\n".join(lines)
-        logger.debug("Founder feedback for %s:\n%s", phase_name, feedback)
+        feedback = questionary.text(
+            "Enter your feedback (press ESC then ENTER to submit):",
+            multiline=True,
+        ).ask()
+
+        if feedback is None:
+            # Aborted
+            choice = "s"
+        else:
+            feedback = feedback.strip()
+            _console.print("[dim]──── Feedback captured ────[/dim]")
+            logger.debug("Founder feedback for %s:\n%s", phase_name, feedback)
 
     if choice == "s":
-        print("\nPipeline stopped by Founder.")
+        _console.print("\n[bold red]Pipeline stopped by Founder.[/bold red]")
         sys.exit(0)
 
     return choice, feedback

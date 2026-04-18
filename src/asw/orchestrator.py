@@ -52,7 +52,11 @@ def _render_tech_stack(data: dict) -> list[str]:
 
 def _render_components(data: dict) -> list[str]:
     """Render the components table of the architecture Markdown."""
-    lines = ["### Components", "| Name | Responsibility | Interfaces |", "| --- | --- | --- |"]
+    lines = [
+        "### Components",
+        "| Name | Responsibility | Interfaces |",
+        "| --- | --- | --- |",
+    ]
     for comp in data.get("components", []):
         iface = _safe_join(comp.get("interfaces", [])) or "None"
         lines.append(f"| {comp.get('name', 'N/A')} | {comp.get('responsibility', 'N/A')} | {iface} |")
@@ -74,7 +78,11 @@ def _render_data_models(data: dict) -> list[str]:
 
 def _render_api_contracts(data: dict) -> list[str]:
     """Render the API-contracts table of the architecture Markdown."""
-    lines = ["### API Contracts", "| Endpoint | Method | Description |", "| --- | --- | --- |"]
+    lines = [
+        "### API Contracts",
+        "| Endpoint | Method | Description |",
+        "| --- | --- | --- |",
+    ]
     for api in data.get("api_contracts", []):
         lines.append(f"| {api.get('endpoint', 'N/A')} | {api.get('method', 'N/A')} | {api.get('description', 'N/A')} |")
     lines.append("")
@@ -198,7 +206,10 @@ def _agent_loop(
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
         logger.debug("Agent loop: %s attempt %d/%d", agent.name, attempt, _MAX_RETRIES + 1)
         print(f"\n>> {agent.name} – attempt {attempt}")
-        print(f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…", flush=True)
+        print(
+            f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…",
+            flush=True,
+        )
         output = agent.run(context, feedback=feedback)
         logger.debug("Agent %s raw output (%d chars):\n%s", agent.name, len(output), output)
         print("   Response received.")
@@ -387,7 +398,13 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     choice, feedback = founder_review("PRD", prd_path)
     while choice in ("r", "m"):
         founder_feedback = feedback if choice == "m" else None
-        prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD", founder_feedback=founder_feedback)
+        prd_content = _agent_loop(
+            cpo,
+            {"vision": vision_content},
+            _lint_prd,
+            "PRD",
+            founder_feedback=founder_feedback,
+        )
         prd_path.write_text(prd_content, encoding="utf-8")
         choice, feedback = founder_review("PRD", prd_path)
     return prd_content
@@ -445,7 +462,11 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
 
     Returns the approved roster JSON string.
     """
-    hm = Agent(name="Hiring Manager", role_file=company / "roles" / "hiring_manager.md", llm=llm)
+    hm = Agent(
+        name="Hiring Manager",
+        role_file=company / "roles" / "hiring_manager.md",
+        llm=llm,
+    )
     standards_dir = company / "standards"
 
     # Build list of available standards filenames.
@@ -712,8 +733,14 @@ def run_pipeline(
     # 0. Validate git repo early (unless commits are disabled).
     if not no_commit and not is_git_repo(workdir):
         print(f"\nError: {workdir} is not inside a git repository.", file=sys.stderr)
-        print("  Run: git init && git commit --allow-empty -m 'Initial commit'", file=sys.stderr)
-        print("  Or skip git entirely: asw start --vision <file> --no-commit", file=sys.stderr)
+        print(
+            "  Run: git init && git commit --allow-empty -m 'Initial commit'",
+            file=sys.stderr,
+        )
+        print(
+            "  Or skip git entirely: asw start --vision <file> --no-commit",
+            file=sys.stderr,
+        )
         return 1
 
     # 0b. Handle --restart: wipe .company/ before anything else.
