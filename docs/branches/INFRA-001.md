@@ -14,7 +14,7 @@ Added standard Python packaging assets to bootstrap the `asw` package.
 
 ## Package Layout
 
-```
+```text
 src/
 └── asw/
     └── __init__.py

@@ -10,4 +10,4 @@ else
 fi
 
 echo "Installing package in editable mode..."
-.venv/bin/pip install --quiet -e ".[dev]" 2>/dev/null || .venv/bin/pip install --quiet -e .
+.venv/bin/pip install -e .
