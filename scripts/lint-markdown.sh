@@ -3,5 +3,5 @@
 set -e
 
 echo "Linting Markdown files..."
-markdownlint-cli2 --config pyproject.toml --configPointer /tool/markdownlint-cli2 "**/*.md" "#."
+markdownlint-cli2 --config pyproject.toml --configPointer /tool/markdownlint-cli2/config "**/*.md" "#."
 echo "✓ Markdown linting passed"

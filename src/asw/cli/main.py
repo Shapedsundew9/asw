@@ -31,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Working directory for .company/ state (default: current directory).",
     )
+    start_parser.add_argument(
+        "--no-commit",
+        action="store_true",
+        default=False,
+        help="Skip git commits at phase boundaries (useful for testing or drafts).",
+    )
 
     return parser
 
@@ -54,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     # Lazy import to keep CLI startup fast.
     from asw.orchestrator import run_pipeline  # noqa: PLC0415
 
-    return run_pipeline(vision_path=vision_path, workdir=workdir)
+    return run_pipeline(vision_path=vision_path, workdir=workdir, no_commit=args.no_commit)
 
 
 if __name__ == "__main__":

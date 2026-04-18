@@ -9,5 +9,9 @@ else
   echo "Python virtual environment already exists at .venv."
 fi
 
+echo "Activating virtual environment and installing dependencies..."
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+
 echo "Installing package and dev quality tools in editable mode..."
 .venv/bin/pip install -e .[dev]

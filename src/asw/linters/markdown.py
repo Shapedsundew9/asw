@@ -72,11 +72,10 @@ def validate_sections(content: str, required_sections: list[str]) -> list[str]:
     Returns a list of error messages (empty == pass).
     """
     errors: list[str] = []
-    lower_content = content.lower()
 
     for section in required_sections:
-        # Match ## heading at any level.
-        if section.lower() not in lower_content:
+        pattern = rf"^#{{1,6}}\s+{re.escape(section)}\s*$"
+        if not re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
             errors.append(f"Required section missing: '{section}'")
 
     return errors

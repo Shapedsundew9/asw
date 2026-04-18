@@ -9,7 +9,7 @@ from pathlib import Path
 from asw.agents.base import Agent
 from asw.company import init_company
 from asw.gates import founder_review
-from asw.git import commit_state
+from asw.git import GitError, commit_state, is_git_repo
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
@@ -74,9 +74,11 @@ def _agent_loop(
     context: dict[str, str],
     lint_fn: object,  # callable
     phase_name: str,
+    *,
+    founder_feedback: str | None = None,
 ) -> str:
     """Run an agent in a retry loop until lint passes or retries are exhausted."""
-    feedback: str | None = None
+    feedback: str | None = founder_feedback
 
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
         print(f"\n>> {agent.name} – attempt {attempt}")
@@ -119,7 +121,7 @@ def _write_architecture(raw_arch: str, company: Path) -> None:
     print(f"✓ Architecture diagram written: {arch_md_path}")
 
 
-def run_pipeline(*, vision_path: Path, workdir: Path) -> int:
+def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -> int:
     """Execute the full V0.1 SDLC pipeline.
 
     Returns 0 on success.
@@ -127,6 +129,12 @@ def run_pipeline(*, vision_path: Path, workdir: Path) -> int:
     print("=" * 72)
     print("  AgenticOrg CLI – V0.1 Pipeline")
     print("=" * 72)
+
+    # 0. Validate git repo early (unless commits are disabled).
+    if not no_commit and not is_git_repo(workdir):
+        print(f"\nError: {workdir} is not inside a git repository.", file=sys.stderr)
+        print("Initialise a git repo first, or use --no-commit.", file=sys.stderr)
+        return 1
 
     # 1. Initialise .company/ directory.
     company = init_company(workdir)
@@ -148,13 +156,21 @@ def run_pipeline(*, vision_path: Path, workdir: Path) -> int:
     prd_path.write_text(prd_content, encoding="utf-8")
     print(f"\n✓ PRD written: {prd_path}")
 
-    choice, _feedback = founder_review("PRD", prd_path)
+    choice, feedback = founder_review("PRD", prd_path)
     while choice in ("r", "m"):
-        prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD")
+        founder_feedback = feedback if choice == "m" else None
+        prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD", founder_feedback=founder_feedback)
         prd_path.write_text(prd_content, encoding="utf-8")
-        choice, _feedback = founder_review("PRD", prd_path)
+        choice, feedback = founder_review("PRD", prd_path)
 
-    commit_state(workdir, "prd-generation")
+    if not no_commit:
+        try:
+            commit_state(workdir, "prd-generation")
+        except GitError as exc:
+            print(f"\nError committing prd-generation: {exc}", file=sys.stderr)
+            return 1
+    else:
+        print("  (skipping git commit – --no-commit)")
 
     # ── Phase B: CTO → Architecture ──────────────────────────────────────
     cto = Agent(name="CTO", role_file=company / "roles" / "cto.md", llm=llm)
@@ -169,18 +185,27 @@ def run_pipeline(*, vision_path: Path, workdir: Path) -> int:
     _write_architecture(raw_arch, company)
 
     arch_json_path = company / "artifacts" / "architecture.json"
-    choice, _feedback = founder_review("Architecture", arch_json_path)
+    choice, feedback = founder_review("Architecture", arch_json_path)
     while choice in ("r", "m"):
+        founder_feedback = feedback if choice == "m" else None
         raw_arch = _agent_loop(
             cto,
             arch_context,
             lambda c: _lint_architecture(c)[0],
             "Architecture",
+            founder_feedback=founder_feedback,
         )
         _write_architecture(raw_arch, company)
-        choice, _feedback = founder_review("Architecture", arch_json_path)
+        choice, feedback = founder_review("Architecture", arch_json_path)
 
-    commit_state(workdir, "architecture-generation")
+    if not no_commit:
+        try:
+            commit_state(workdir, "architecture-generation")
+        except GitError as exc:
+            print(f"\nError committing architecture-generation: {exc}", file=sys.stderr)
+            return 1
+    else:
+        print("  (skipping git commit – --no-commit)")
 
     # ── Done ─────────────────────────────────────────────────────────────
     print("\n" + "=" * 72)

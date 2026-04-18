@@ -8,7 +8,7 @@
 
 ## **1\. Product Overview**
 
-I want to build "AgenticOrg CLI", a Python-based command-line interface tool that orchestrates a simulated company of LLM-based software development agents. The tool will live entirely within a VS Code DevContainer and utilize standard Python 3.12+ and Bash scripts to manage a complete Software Development Life Cycle (SDLC).
+I want to build "AgenticOrg CLI", a Python-based command-line interface tool that orchestrates a simulated company of LLM-based software development agents. The tool will live entirely within a VS Code DevContainer and utilize standard Python 3.14+ and Bash scripts to manage a complete Software Development Life Cycle (SDLC).
 
 ## **2\. Target Audience**
 
@@ -41,4 +41,4 @@ The system must support the dynamic instantiation of distinct agent roles, guide
 
 ## **6\. Definition of Done (V0.1 MVP)**
 
-The V0.1 MVP is successful when I can run python cli/main.py start \--vision vision.md, and the system automatically coordinates the CPO and CTO agents to produce a linted, mechanically validated, and git-committed Product Requirements Document and Architecture JSON file, pausing for my approval via the terminal.
+The V0.1 MVP is successful when I can run asw start \--vision vision.md, and the system automatically coordinates the CPO and CTO agents to produce a linted, mechanically validated, and git-committed Product Requirements Document and Architecture JSON file, pausing for my approval via the terminal.

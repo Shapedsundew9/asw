@@ -49,12 +49,20 @@ def commit_state(workdir: Path, phase_name: str) -> str:
 
     message = f"[asw] Phase: {phase_name} completed"
 
-    try:
-        _run_git(workdir, "commit", "-m", message)
-    except GitError:
-        # Nothing to commit (no changes) – not an error for us.
+    # Check whether there are staged changes before committing.
+    diff_result = subprocess.run(  # noqa: S603, S607
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diff_result.returncode == 0:
+        # No staged changes – nothing to commit.
         print(f"  (no changes to commit for phase '{phase_name}')")
         return ""
+
+    _run_git(workdir, "commit", "-m", message)
 
     result = _run_git(workdir, "rev-parse", "HEAD")
     commit_hash = result.stdout.strip()

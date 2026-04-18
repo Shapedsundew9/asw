@@ -26,7 +26,7 @@ A fenced Mermaid code block (` ```mermaid `) containing a valid component or flo
 ## Strict Rules
 
 - The JSON MUST be valid and parseable. Do NOT include comments or trailing commas.
-- The Mermaid diagram MUST use `graph TD`, `graph LR`, or `C4Context` syntax.
+- The Mermaid diagram MUST use valid Mermaid syntax (e.g. `graph TD`, `graph LR`, `flowchart`, `sequenceDiagram`, `C4Context`, etc.). Choose whichever diagram type best visualises the architecture.
 - Base all decisions on the provided Vision and PRD. Do NOT invent requirements.
 - Do NOT include any text outside of the two fenced code blocks. No preamble, no sign-off.
 - Under NO circumstances omit any of the required JSON keys.

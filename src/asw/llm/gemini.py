@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
-from pathlib import Path
 
 _DEFAULT_TIMEOUT = 300  # seconds
 
@@ -21,24 +19,17 @@ class GeminiCLIBackend:
         """Run Gemini CLI with *system_prompt* + *user_prompt* and return the text response."""
         combined_prompt = f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_prompt}"
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as fh:
-            fh.write(combined_prompt)
-            prompt_file = Path(fh.name)
+        cmd: list[str] = ["gemini", "-p", combined_prompt, "-o", "json"]
+        if self._model:
+            cmd.extend(["-m", self._model])
 
-        try:
-            cmd: list[str] = ["gemini", "-p", combined_prompt, "-o", "json"]
-            if self._model:
-                cmd.extend(["-m", self._model])
-
-            result = subprocess.run(  # noqa: S603
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout,
-                check=False,
-            )
-        finally:
-            prompt_file.unlink(missing_ok=True)
+        result = subprocess.run(  # noqa: S603
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=self._timeout,
+            check=False,
+        )
 
         if result.returncode != 0:
             msg = f"Gemini CLI exited with code {result.returncode}:\n{result.stderr.strip()}"
@@ -58,5 +49,5 @@ class GeminiCLIBackend:
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])
             return raw
-        except json.JSONDecodeError, KeyError:
+        except (json.JSONDecodeError, KeyError):
             return raw
