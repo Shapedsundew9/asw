@@ -62,7 +62,15 @@ The pipeline also calls `sys.exit(0)` when the Founder chooses **[S]top** at a r
 ## Environment Requirements
 
 - The `gemini` CLI must be installed and on `$PATH` before running any command.
+- `GEMINI_API_KEY` must be exported in the same shell session that runs `asw`.
 - `--workdir` (or the current directory) must be inside a git repository **unless** `--no-commit` is used.
+
+Quick verification:
+
+```bash
+env | grep GEMINI_API_KEY
+gemini -p "Reply with OK" -o json
+```
 
 ## See Also
 

@@ -6,6 +6,18 @@ This guide takes you from zero to a completed pipeline run in about five minutes
 
 Complete [Installation](installation.md) first. Your Gemini CLI must be authenticated and your project folder must be a git repository.
 
+Before running the pipeline, confirm the current shell can see your API key:
+
+```bash
+env | grep GEMINI_API_KEY
+```
+
+If this prints nothing, set it in this shell session first:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+```
+
 ## Step 1 — Create a Project Folder
 
 ```bash
@@ -130,3 +142,12 @@ Your git log will contain two auto-commits:
 - [First Project Tutorial](../tutorials/first-project.md) — a deeper walkthrough with commentary on each decision
 - [CLI Reference](../reference/cli.md) — full flag documentation
 - [Key Concepts](../reference/concepts.md) — the pipeline, roles, and review gates explained
+
+## Troubleshooting
+
+If you see an error like `Gemini CLI exited with code 41` and a message about `GEMINI_API_KEY`:
+
+1. Set the key in the same shell where you run `asw`.
+2. Re-check with `env | grep GEMINI_API_KEY`.
+3. Run `gemini -p "Reply with OK" -o json` to verify Gemini works directly.
+4. Re-run `asw start --vision vision.md --no-commit`.

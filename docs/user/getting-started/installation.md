@@ -27,6 +27,32 @@ gemini --version
 
 If the command is not found, ensure your npm global bin directory is on `$PATH`.
 
+### Authenticate Gemini For Non-Interactive Runs
+
+`asw` calls Gemini in headless mode (`gemini -p ... -o json`). In this mode, Gemini requires `GEMINI_API_KEY` to be set in the shell environment.
+
+Set it for the current shell session:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+```
+
+Verify the variable is visible before running `asw`:
+
+```bash
+env | grep GEMINI_API_KEY
+```
+
+If you want this to persist across new terminals, add the export to your shell profile (for example `~/.bashrc` or `~/.zshrc`) and open a new shell.
+
+Quick end-to-end check:
+
+```bash
+gemini -p "Reply with OK" -o json
+```
+
+If this command fails with code `41`, Gemini still cannot see your API key in the current shell.
+
 ### Install `asw`
 
 Clone the repository and install it in editable mode inside a virtual environment:
