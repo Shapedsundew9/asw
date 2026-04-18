@@ -1,0 +1,22 @@
+{
+  "name": "Python Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/python:1",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y ripgrep && npm install -g @google/gemini-cli @github/copilot",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "github.copilot",
+        "github.copilot-chat"
+      ]
+    }
+  }
+}
