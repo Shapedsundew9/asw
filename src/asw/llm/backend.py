@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from typing import Protocol, runtime_checkable
+
+logger = logging.getLogger("asw.llm")
 
 
 @runtime_checkable
@@ -25,12 +28,14 @@ def get_backend(name: str = "gemini") -> LLMBackend:
         If *name* is not recognised.
     """
     if name == "gemini":
+        logger.debug("Resolving LLM backend: %s", name)
         if shutil.which("gemini") is None:
             msg = "The 'gemini' CLI was not found on $PATH. Install it with: npm install -g @google/gemini-cli"
             raise RuntimeError(msg)
 
         from asw.llm.gemini import GeminiCLIBackend  # noqa: PLC0415
 
+        logger.debug("GeminiCLIBackend instantiated")
         return GeminiCLIBackend()
 
     msg = f"Unknown LLM backend: {name!r}"

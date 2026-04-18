@@ -61,5 +61,8 @@
 	// 1. Ensure Node.js is available (Copilot CLI requires it)
 	"features": {
 		"ghcr.io/devcontainers/features/node:1": {}
+	},
+	"containerEnv": {
+		"GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}"
 	}
 }

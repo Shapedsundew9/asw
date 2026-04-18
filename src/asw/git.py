@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger("asw.git")
 
 
 class GitError(RuntimeError):
@@ -12,6 +15,7 @@ class GitError(RuntimeError):
 
 def _run_git(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run a git command inside *workdir* and return the result."""
+    logger.debug("Running: git %s (cwd=%s)", " ".join(args), workdir)
     result = subprocess.run(  # noqa: S603, S607
         ["git", *args],
         cwd=workdir,

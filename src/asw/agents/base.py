@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from asw.llm.backend import LLMBackend
+
+logger = logging.getLogger("asw.agents")
 
 
 @dataclass
@@ -43,6 +46,13 @@ class Agent:
             The raw text output from the LLM.
         """
         system_prompt = self.role_file.read_text(encoding="utf-8")
+        logger.debug(
+            "Agent %s system prompt from %s (%d chars):\n%s",
+            self.name,
+            self.role_file,
+            len(system_prompt),
+            system_prompt,
+        )
 
         parts: list[str] = []
         for key, value in context.items():
@@ -52,4 +62,7 @@ class Agent:
             parts.append(f"### REVIEWER FEEDBACK\n\n{feedback}")
 
         user_prompt = "\n\n".join(parts)
-        return self.llm.invoke(system_prompt, user_prompt)
+        logger.debug("Agent %s user prompt (%d chars):\n%s", self.name, len(user_prompt), user_prompt)
+        response = self.llm.invoke(system_prompt, user_prompt)  # pylint: disable=assignment-from-no-return
+        logger.debug("Agent %s LLM response (%d chars):\n%s", self.name, len(response), response)
+        return response

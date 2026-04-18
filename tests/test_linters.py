@@ -14,6 +14,22 @@ def test_checklist_valid() -> None:
     assert not validate_checklist(content)
 
 
+def test_checklist_variations() -> None:
+    """Test checklist with indentation, plus bullets, and uppercase X passes."""
+    content = (
+        "  - [x] Indented\n"
+        "+ [X] Plus bullet uppercase\n"
+        "* [x] Star bullet\n"
+    )
+    assert not validate_checklist(content)
+
+
+def test_checklist_valid_with_star_bullets() -> None:
+    """Test valid checklist using '*' bullets also passes."""
+    content = "* [x] First item\n* [x] Second item\n"
+    assert not validate_checklist(content)
+
+
 def test_checklist_missing() -> None:
     """Test missing checklist returns an error."""
     content = "No checklist here.\n"

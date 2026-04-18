@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -15,6 +17,98 @@ from asw.linters.markdown import validate_checklist, validate_mermaid, validate_
 from asw.llm.backend import LLMBackend, get_backend
 
 _MAX_RETRIES = 2
+
+logger = logging.getLogger("asw.orchestrator")
+
+def _safe_join(items: list[str] | str) -> str:
+    """Safely join a list of strings, or return the string if not a list."""
+    if isinstance(items, str):
+        return items
+    return ", ".join(items)
+
+
+def _render_architecture_markdown(json_str: str, mermaid_str: str) -> str:
+    """Render a human-readable Markdown from architecture JSON and Mermaid."""
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        # Fallback if JSON is somehow invalid after linting (unlikely)
+        return (
+            "# System Architecture\n\n"
+            "> **Warning:** Technical specification could not be parsed.\n\n"
+            f"```mermaid\n{mermaid_str}\n```"
+        )
+
+    lines = ["# System Architecture", ""]
+    lines.append(
+        "> **Source of Truth:** The technical specification for this architecture is stored in `architecture.json`."
+    )
+    lines.append("")
+    lines.append("## Visual Overview")
+    lines.append(f"```mermaid\n{mermaid_str}\n```")
+    lines.append("")
+
+    # Project Info
+    name = data.get("project_name", "N/A")
+    lines.append(f"## Project: {name}")
+    lines.append("")
+
+    # Tech Stack
+    ts = data.get("tech_stack", {})
+    lines.append("### Tech Stack")
+    lines.append(f"- **Language:** {ts.get('language', 'N/A')} ({ts.get('version', 'N/A')})")
+    frameworks = _safe_join(ts.get("frameworks", [])) or "None"
+    lines.append(f"- **Frameworks:** {frameworks}")
+    tools = _safe_join(ts.get("tools", [])) or "None"
+    lines.append(f"- **Tools:** {tools}")
+    lines.append("")
+
+    # Components
+    lines.append("### Components")
+    lines.append("| Name | Responsibility | Interfaces |")
+    lines.append("| --- | --- | --- |")
+    for comp in data.get("components", []):
+        name = comp.get("name", "N/A")
+        resp = comp.get("responsibility", "N/A")
+        iface = _safe_join(comp.get("interfaces", [])) or "None"
+        lines.append(f"| {name} | {resp} | {iface} |")
+    lines.append("")
+
+    # Data Models
+    lines.append("### Data Models")
+    for model in data.get("data_models", []):
+        mname = model.get("name", "N/A")
+        lines.append(f"#### {mname}")
+        lines.append("| Field | Type |")
+        lines.append("| --- | --- |")
+        for field in model.get("fields", []):
+            fname = field.get("name", "N/A")
+            ftype = field.get("type", "N/A")
+            lines.append(f"| {fname} | {ftype} |")
+        lines.append("")
+
+    # API Contracts
+    lines.append("### API Contracts")
+    lines.append("| Endpoint | Method | Description |")
+    lines.append("| --- | --- | --- |")
+    for api in data.get("api_contracts", []):
+        ep = api.get("endpoint", "N/A")
+        meth = api.get("method", "N/A")
+        desc = api.get("description", "N/A")
+        lines.append(f"| {ep} | {meth} | {desc} |")
+    lines.append("")
+
+    # Deployment
+    dep = data.get("deployment", {})
+    lines.append("### Deployment")
+    lines.append(f"- **Platform:** {dep.get('platform', 'N/A')}")
+    lines.append(f"- **Strategy:** {dep.get('strategy', 'N/A')}")
+    reqs = _safe_join(dep.get("requirements", [])) or "None"
+    lines.append(f"- **Requirements:** {reqs}")
+    lines.append("")
+
+    return "\n".join(lines)
+
 
 _PRD_REQUIRED_SECTIONS = [
     "Executive Summary",
@@ -36,6 +130,9 @@ def _lint_prd(content: str) -> list[str]:
     errors.extend(validate_sections(content, _PRD_REQUIRED_SECTIONS))
     errors.extend(validate_checklist(content))
     errors.extend(validate_mermaid(content))
+    logger.debug("PRD lint result: %d error(s)", len(errors))
+    for err in errors:
+        logger.debug("  PRD lint error: %s", err)
     return errors
 
 
@@ -66,6 +163,9 @@ def _lint_architecture(content: str) -> tuple[list[str], str | None, str | None]
     if mermaid_block is None:
         errors.append("No fenced ```mermaid``` code block found in CTO output.")
 
+    logger.debug("Architecture lint result: %d error(s)", len(errors))
+    for err in errors:
+        logger.debug("  Architecture lint error: %s", err)
     return errors, json_block, mermaid_block
 
 
@@ -81,9 +181,11 @@ def _agent_loop(
     feedback: str | None = founder_feedback
 
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
+        logger.debug("Agent loop: %s attempt %d/%d", agent.name, attempt, _MAX_RETRIES + 1)
         print(f"\n>> {agent.name} – attempt {attempt}")
         print(f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…", flush=True)
         output = agent.run(context, feedback=feedback)
+        logger.debug("Agent %s raw output (%d chars):\n%s", agent.name, len(output), output)
         print("   Response received.")
 
         errors = lint_fn(output)  # type: ignore[operator]
@@ -96,6 +198,7 @@ def _agent_loop(
             print(f"     - {err}")
 
         if attempt > _MAX_RETRIES:
+            logger.debug("Agent %s exhausted retries – exiting", agent.name)
             print(f"\nFATAL: {agent.name} failed to produce valid output after {_MAX_RETRIES + 1} attempts.")
             print("  → Try simplifying your vision document and re-running `asw start`.")
             sys.exit(1)
@@ -103,6 +206,7 @@ def _agent_loop(
         feedback = "The previous output failed mechanical validation." " Fix these errors:\n" + "\n".join(
             f"- {e}" for e in errors
         )
+        logger.debug("Feedback for next attempt:\n%s", feedback)
 
     # Unreachable but keeps mypy happy.
     msg = "Unreachable"
@@ -117,7 +221,7 @@ def _write_architecture(raw_arch: str, company: Path) -> None:
     arch_json_path.write_text(json_str or "", encoding="utf-8")
 
     arch_md_path = company / "artifacts" / "architecture.md"
-    arch_md_content = f"# System Architecture Diagram\n\n" f"```mermaid\n{mermaid_str or ''}\n```\n"
+    arch_md_content = _render_architecture_markdown(json_str or "{}", mermaid_str or "")
     arch_md_path.write_text(arch_md_content, encoding="utf-8")
 
     print(f"\n✓ Architecture JSON written: {arch_json_path}")
@@ -142,11 +246,16 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     return prd_content
 
 
-def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -> int:
+def run_pipeline(
+    *, vision_path: Path, workdir: Path, no_commit: bool = False, debug: bool = False
+) -> int:  # pylint: disable=too-many-locals
     """Execute the full V0.1 SDLC pipeline.
 
     Returns 0 on success.
     """
+    logger.debug(
+        "run_pipeline called: vision_path=%s workdir=%s no_commit=%s debug=%s", vision_path, workdir, no_commit, debug
+    )
     print("=" * 72)
     print("  AgenticOrg CLI – V0.1 Pipeline")
     print("=" * 72)
@@ -164,10 +273,12 @@ def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -
 
     # 2. Read vision.
     vision_content = vision_path.read_text(encoding="utf-8")
+    logger.debug("Vision content (%d chars):\n%s", len(vision_content), vision_content)
     print(f"✓ Vision loaded: {vision_path.name} ({len(vision_content)} chars)")
 
     # 3. Get LLM backend.
     llm: LLMBackend = get_backend("gemini")
+    logger.debug("LLM backend acquired: gemini")
     print("✓ LLM backend: Gemini CLI")
 
     # ── Phase A: CPO → PRD ───────────────────────────────────────────────

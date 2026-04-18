@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("asw.gates")
 
 _VALID_CHOICES = {"a", "r", "m", "s"}
 
@@ -48,6 +51,8 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
             break
         print("Invalid choice. Please enter A, R, M, or S.")
 
+    logger.debug("Founder review for %s: choice=%s", phase_name, choice)
+
     feedback: str | None = None
     if choice == "m":
         print("Enter your feedback below.")
@@ -61,6 +66,7 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
             lines.append(line)
         print(f"──── Feedback captured ({len(lines)} line(s)) ────")
         feedback = "\n".join(lines)
+        logger.debug("Founder feedback for %s:\n%s", phase_name, feedback)
 
     if choice == "s":
         print("\nPipeline stopped by Founder.")

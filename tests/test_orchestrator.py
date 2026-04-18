@@ -7,7 +7,34 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from asw.orchestrator import run_pipeline
+from asw.orchestrator import _render_architecture_markdown, run_pipeline
+
+# ── Unit tests ──────────────────────────────────────────────────────────
+
+def test_render_architecture_markdown_string_lists() -> None:
+    """Ensure we safely handle single strings instead of lists in architecture."""
+    data = {
+        "project_name": "Test",
+        "tech_stack": {
+            "frameworks": "React",
+            "tools": "Webpack",
+        },
+        "components": [
+            {"name": "Frontend", "interfaces": "HTTP"},
+        ],
+        "deployment": {
+            "requirements": "Modern browser",
+        }
+    }
+    json_str = json.dumps(data)
+    md = _render_architecture_markdown(json_str, "graph TD\nA-->B")
+    
+    assert "- **Frameworks:** React" in md
+    assert "- **Tools:** Webpack" in md
+    assert "| Frontend | N/A | HTTP |" in md
+    assert "- **Requirements:** Modern browser" in md
+    assert "M, o, d, e, r, n" not in md
+
 
 # ── Canned LLM responses ────────────────────────────────────────────────
 

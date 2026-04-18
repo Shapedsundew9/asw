@@ -22,8 +22,8 @@ _MERMAID_KEYWORDS = (
     "C4Component",
 )
 
-_CHECKED_RE = re.compile(r"^- \[x\] .+", re.MULTILINE)
-_UNCHECKED_RE = re.compile(r"^- \[ \] .+", re.MULTILINE)
+_CHECKED_RE = re.compile(r"^\s*[\-*+] \[[xX]\]\s+.+", re.MULTILINE)
+_UNCHECKED_RE = re.compile(r"^\s*[\-*+] \[ \]\s+.+", re.MULTILINE)
 
 
 def validate_checklist(content: str) -> list[str]:

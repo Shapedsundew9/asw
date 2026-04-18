@@ -10,3 +10,4 @@ This repository uses a Debian-based VS Code Dev Container built on Microsoft's s
 - Unit/integration testing patterns, fixture design, and reproducible test execution in containerized environments.
 - An embedded mermaid chart in a markdown file is often better than just trying to describe a workflow, sequence or concept.
 - Always create or update docs/branches/\<branch-name\>/CHANGE-LOG.md with overview of changes that have been made on this branch.
+- DO NOT suppress linting errors and warnings. Fix them.
