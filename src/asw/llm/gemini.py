@@ -75,7 +75,7 @@ class GeminiCLIBackend:
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])
             return raw
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             for data in GeminiCLIBackend.iter_json_lines(raw):
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])

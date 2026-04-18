@@ -41,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip git commits at phase boundaries (useful for testing or drafts).",
     )
     start_parser.add_argument(
+        "--restart",
+        action="store_true",
+        default=False,
+        help="Delete existing .company/ directory and restart the pipeline from scratch.",
+    )
+    start_parser.add_argument(
         "--debug",
         nargs="?",
         const=True,
@@ -107,7 +113,13 @@ def main(argv: list[str] | None = None) -> int:
     # Lazy import to keep CLI startup fast.
     from asw.orchestrator import run_pipeline
 
-    return run_pipeline(vision_path=vision_path, workdir=workdir, no_commit=args.no_commit, debug=bool(args.debug))
+    return run_pipeline(
+        vision_path=vision_path,
+        workdir=workdir,
+        no_commit=args.no_commit,
+        debug=bool(args.debug),
+        restart=args.restart,
+    )
 
 
 if __name__ == "__main__":

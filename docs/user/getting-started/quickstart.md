@@ -66,7 +66,7 @@ asw start --vision vision.md
 
 ```text
 ========================================================================
-  AgenticOrg CLI – V0.1 Pipeline
+  AgenticOrg CLI – V0.2 Pipeline
 ========================================================================
 
 ✓ Company directory initialised: /path/to/my-first-project/.company
@@ -110,7 +110,15 @@ After approving, `asw` commits the artifact to git and moves on.
 
 ## Step 5 — Review the Architecture
 
-After the PRD is approved, the CTO agent runs and produces a system architecture. A second Founder Review Gate pauses the pipeline for your approval before the final commit.
+After the PRD is approved, the CTO agent runs and produces a system architecture. A second Founder Review Gate pauses the pipeline for your approval.
+
+## Step 6 — Review the Roster
+
+After the architecture is approved, the Hiring Manager agent proposes a roster of specialist roles needed to implement the system. A third Founder Review Gate pauses for your approval — this is a budget/headcount decision. You can use **Modify** to directly add, remove, or rename roles before approving.
+
+## Step 7 — Automatic Role Generation
+
+Once you approve the roster, the Role Writer agent generates a Markdown system prompt for each role — one LLM call per role. This runs automatically with no further review gates.
 
 ## What Gets Created
 
@@ -121,20 +129,29 @@ my-first-project/
   vision.md
   .company/
     roles/
-      cpo.md              ← CPO system prompt
-      cto.md              ← CTO system prompt
+      cpo.md                        ← CPO system prompt
+      cto.md                        ← CTO system prompt
+      hiring_manager.md             ← Hiring Manager system prompt
+      role_writer.md                ← Role Writer system prompt
+      python_backend_developer.md   ← Generated role (example)
+      frontend_developer.md         ← Generated role (example)
     artifacts/
-      prd.md              ← Product Requirements Document
-      architecture.json   ← Architecture spec
-      architecture.md     ← Architecture diagram (Mermaid)
-    state/                ← Internal pipeline state
+      prd.md                        ← Product Requirements Document
+      architecture.json             ← Architecture spec
+      architecture.md               ← Architecture diagram (Mermaid)
+      roster.json                   ← Approved roster
+      roster.md                     ← Roster summary
+    memory/                         ← Living documents
+    templates/                      ← Reusable Markdown structures
+    standards/                      ← Organisational guidelines
 ```
 
-Your git log will contain two auto-commits:
+Your git log will contain three auto-commits:
 
 ```text
 [asw] Phase: prd-generation completed
 [asw] Phase: architecture-generation completed
+[asw] Phase: hiring completed
 ```
 
 ## What's Next

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from asw.llm.backend import LLMBackend
@@ -28,6 +28,7 @@ class Agent:
     name: str
     role_file: Path
     llm: LLMBackend
+    standards: list[Path] = field(default_factory=list)
 
     def run(self, context: dict[str, str], *, feedback: str | None = None) -> str:
         """Execute the agent's role against the supplied *context*.
@@ -46,6 +47,13 @@ class Agent:
             The raw text output from the LLM.
         """
         system_prompt = self.role_file.read_text(encoding="utf-8")
+
+        # Append organisational standards to the system prompt.
+        for std_path in self.standards:
+            if std_path.is_file():
+                system_prompt += "\n\n---\n\n" + std_path.read_text(encoding="utf-8")
+                logger.debug("Injected standard: %s", std_path)
+
         logger.debug(
             "Agent %s system prompt from %s (%d chars):\n%s",
             self.name,

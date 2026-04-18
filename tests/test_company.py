@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from asw.company import COMPANY_DIR, SUBDIRS, init_company
+from asw.company import (
+    COMPANY_DIR,
+    SUBDIRS,
+    clear_company,
+    hash_file,
+    init_company,
+    mark_phase_complete,
+    read_pipeline_state,
+    write_pipeline_state,
+)
 
 
 def test_init_creates_directories(tmp_path: Path) -> None:
@@ -29,9 +38,118 @@ def test_init_copies_role_templates(tmp_path: Path) -> None:
     assert "cto.md" in names
 
 
+def test_init_copies_templates(tmp_path: Path) -> None:
+    """Test that init_company copies bundled template files."""
+    company = init_company(tmp_path)
+
+    templates_dir = company / "templates"
+    template_files = {f.name for f in templates_dir.glob("*.md")}
+    assert "prd_template.md" in template_files
+    assert "architecture_template.md" in template_files
+    assert "role_template.md" in template_files
+
+
+def test_init_copies_standards(tmp_path: Path) -> None:
+    """Test that init_company copies bundled standards files."""
+    company = init_company(tmp_path)
+
+    standards_dir = company / "standards"
+    standards_files = {f.name for f in standards_dir.glob("*.md")}
+    assert "python_guidelines.md" in standards_files
+    assert "ui_guidelines.md" in standards_files
+
+
+def test_init_migrates_state_to_memory(tmp_path: Path) -> None:
+    """Test that init_company renames legacy state/ to memory/."""
+    # Pre-create a legacy .company/state/ directory with a file.
+    legacy_state = tmp_path / COMPANY_DIR / "state"
+    legacy_state.mkdir(parents=True)
+    (legacy_state / "some_file.txt").write_text("legacy data")
+
+    company = init_company(tmp_path)
+
+    # state/ should be gone, memory/ should exist with the file.
+    assert not (company / "state").exists()
+    assert (company / "memory").is_dir()
+    assert (company / "memory" / "some_file.txt").read_text() == "legacy data"
+
+
 def test_init_idempotent(tmp_path: Path) -> None:
     """Test that init_company can be called multiple times safely."""
     init_company(tmp_path)
     # Running again must not raise or overwrite existing files.
     company = init_company(tmp_path)
     assert (company / "roles" / "cpo.md").is_file()
+    assert (company / "templates" / "prd_template.md").is_file()
+    assert (company / "standards" / "python_guidelines.md").is_file()
+
+
+# ── Pipeline state tests ────────────────────────────────────────────────
+
+
+def test_hash_file_consistent(tmp_path: Path) -> None:
+    """hash_file returns the same digest for the same content."""
+    f = tmp_path / "test.txt"
+    f.write_text("hello world")
+    assert hash_file(f) == hash_file(f)
+
+
+def test_hash_file_differs_on_change(tmp_path: Path) -> None:
+    """hash_file returns a different digest when content changes."""
+    f = tmp_path / "test.txt"
+    f.write_text("version 1")
+    h1 = hash_file(f)
+    f.write_text("version 2")
+    h2 = hash_file(f)
+    assert h1 != h2
+
+
+def test_read_pipeline_state_missing(tmp_path: Path) -> None:
+    """read_pipeline_state returns None when no state file exists."""
+    assert read_pipeline_state(tmp_path) is None
+
+
+def test_read_pipeline_state_corrupt(tmp_path: Path) -> None:
+    """read_pipeline_state returns None for invalid JSON."""
+    state_path = tmp_path / COMPANY_DIR / "pipeline_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("not json!", encoding="utf-8")
+    assert read_pipeline_state(tmp_path) is None
+
+
+def test_write_and_read_pipeline_state(tmp_path: Path) -> None:
+    """Round-trip: write then read pipeline state."""
+    init_company(tmp_path)
+    state = {"version": "0.2", "vision_sha256": "abc123", "completed_phases": {}}
+    write_pipeline_state(tmp_path, state)
+    loaded = read_pipeline_state(tmp_path)
+    assert loaded == state
+
+
+def test_mark_phase_complete(tmp_path: Path) -> None:
+    """mark_phase_complete records a phase and persists state."""
+    init_company(tmp_path)
+    state: dict = {"version": "0.2", "vision_sha256": "abc", "completed_phases": {}}
+    write_pipeline_state(tmp_path, state)
+
+    state = mark_phase_complete(tmp_path, state, "prd")
+    assert "prd" in state["completed_phases"]
+    assert "timestamp" in state["completed_phases"]["prd"]
+
+    # Verify it was persisted.
+    loaded = read_pipeline_state(tmp_path)
+    assert loaded is not None
+    assert "prd" in loaded["completed_phases"]
+
+
+def test_clear_company(tmp_path: Path) -> None:
+    """clear_company removes the entire .company/ directory."""
+    company = init_company(tmp_path)
+    assert company.is_dir()
+    clear_company(tmp_path)
+    assert not company.exists()
+
+
+def test_clear_company_noop_if_missing(tmp_path: Path) -> None:
+    """clear_company does nothing if .company/ doesn't exist."""
+    clear_company(tmp_path)  # Should not raise.
