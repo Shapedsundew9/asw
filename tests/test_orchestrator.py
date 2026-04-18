@@ -11,6 +11,7 @@ from asw.orchestrator import _render_architecture_markdown, run_pipeline
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
+
 def test_render_architecture_markdown_string_lists() -> None:
     """Ensure we safely handle single strings instead of lists in architecture."""
     data = {
@@ -24,11 +25,11 @@ def test_render_architecture_markdown_string_lists() -> None:
         ],
         "deployment": {
             "requirements": "Modern browser",
-        }
+        },
     }
     json_str = json.dumps(data)
     md = _render_architecture_markdown(json_str, "graph TD\nA-->B")
-    
+
     assert "- **Frameworks:** React" in md
     assert "- **Tools:** Webpack" in md
     assert "| Frontend | N/A | HTTP |" in md

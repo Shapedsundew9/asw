@@ -20,6 +20,7 @@ _MAX_RETRIES = 2
 
 logger = logging.getLogger("asw.orchestrator")
 
+
 def _safe_join(items: list[str] | str) -> str:
     """Safely join a list of strings, or return the string if not a list."""
     if isinstance(items, str):
@@ -29,6 +30,7 @@ def _safe_join(items: list[str] | str) -> str:
 
 def _render_architecture_markdown(json_str: str, mermaid_str: str) -> str:
     """Render a human-readable Markdown from architecture JSON and Mermaid."""
+    # pylint: disable=too-many-locals,too-many-statements
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
@@ -246,9 +248,9 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     return prd_content
 
 
-def run_pipeline(
+def run_pipeline(  # pylint: disable=too-many-locals,too-many-statements
     *, vision_path: Path, workdir: Path, no_commit: bool = False, debug: bool = False
-) -> int:  # pylint: disable=too-many-locals
+) -> int:
     """Execute the full V0.1 SDLC pipeline.
 
     Returns 0 on success.

@@ -16,11 +16,7 @@ def test_checklist_valid() -> None:
 
 def test_checklist_variations() -> None:
     """Test checklist with indentation, plus bullets, and uppercase X passes."""
-    content = (
-        "  - [x] Indented\n"
-        "+ [X] Plus bullet uppercase\n"
-        "* [x] Star bullet\n"
-    )
+    content = "  - [x] Indented\n+ [X] Plus bullet uppercase\n* [x] Star bullet\n"
     assert not validate_checklist(content)
 
 
