@@ -10,8 +10,23 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
 
+[project.scripts]
+asw = "asw.cli.main:main"
+
+[project.optional-dependencies]
+dev = [
+	"black",
+	"isort",
+	"mypy",
+	"pylint",
+	"pytest",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+asw = ["roles/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -22,3 +37,24 @@ line-length = 120
 [tool.isort]
 profile = "black"
 line_length = 120
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint."messages control"]
+disable = [
+	"too-few-public-methods",
+	"import-outside-toplevel",
+]
+
+[tool.markdownlint-cli2.config]
+MD024 = false
+MD036 = false
+MD060 = false
+MD013 = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint]
+select = ["D"]  # Enable all pydocstyle (D) rules
