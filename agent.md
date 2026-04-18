@@ -10,7 +10,7 @@ This repository uses a Debian-based VS Code Dev Container built on Microsoft's l
 
 ### 2) Python Quality Agent
 - **Scope:** Run and interpret linting, formatting, and static analysis workflows configured for the project.
-- **Skill criteria:** Familiarity with common Python quality tools (for example: `ruff`, `pytest`, type checking tools) and CI feedback loops.
+- **Skill criteria:** Familiarity with common Python quality tools (for example: `ruff`, formatters, and type checking tools) and CI feedback loops.
 
 ### 3) Python Test Agent
 - **Scope:** Add and update targeted tests for changed behavior and verify regressions are not introduced.
