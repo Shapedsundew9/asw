@@ -37,7 +37,7 @@ class Agent:
         feedback:
             Optional reviewer feedback from a prior rejected attempt.
 
-        Returns
+        Returns:
         -------
         str
             The raw text output from the LLM.

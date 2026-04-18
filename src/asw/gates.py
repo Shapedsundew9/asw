@@ -20,7 +20,7 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
     artifact_path:
         Path to the artifact file to review.
 
-    Returns
+    Returns:
     -------
     tuple[str, str | None]
         ``(choice, feedback)`` where *choice* is one of

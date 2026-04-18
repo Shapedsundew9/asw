@@ -121,6 +121,24 @@ def _write_architecture(raw_arch: str, company: Path) -> None:
     print(f"✓ Architecture diagram written: {arch_md_path}")
 
 
+def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
+    """Run the CPO PRD phase including founder review loop."""
+    cpo = Agent(name="CPO", role_file=company / "roles" / "cpo.md", llm=llm)
+    prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD")
+
+    prd_path = company / "artifacts" / "prd.md"
+    prd_path.write_text(prd_content, encoding="utf-8")
+    print(f"\n✓ PRD written: {prd_path}")
+
+    choice, feedback = founder_review("PRD", prd_path)
+    while choice in ("r", "m"):
+        founder_feedback = feedback if choice == "m" else None
+        prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD", founder_feedback=founder_feedback)
+        prd_path.write_text(prd_content, encoding="utf-8")
+        choice, feedback = founder_review("PRD", prd_path)
+    return prd_content
+
+
 def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -> int:
     """Execute the full V0.1 SDLC pipeline.
 
@@ -149,19 +167,7 @@ def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -
     print("✓ LLM backend: Gemini CLI")
 
     # ── Phase A: CPO → PRD ───────────────────────────────────────────────
-    cpo = Agent(name="CPO", role_file=company / "roles" / "cpo.md", llm=llm)
-    prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD")
-
-    prd_path = company / "artifacts" / "prd.md"
-    prd_path.write_text(prd_content, encoding="utf-8")
-    print(f"\n✓ PRD written: {prd_path}")
-
-    choice, feedback = founder_review("PRD", prd_path)
-    while choice in ("r", "m"):
-        founder_feedback = feedback if choice == "m" else None
-        prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD", founder_feedback=founder_feedback)
-        prd_path.write_text(prd_content, encoding="utf-8")
-        choice, feedback = founder_review("PRD", prd_path)
+    prd_content = _run_prd_phase(company, vision_content, llm)
 
     if not no_commit:
         try:

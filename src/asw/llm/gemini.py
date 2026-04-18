@@ -12,6 +12,12 @@ class GeminiCLIBackend:
     """Call the Gemini CLI in non-interactive (headless) mode."""
 
     def __init__(self, *, timeout: int = _DEFAULT_TIMEOUT, model: str | None = None) -> None:
+        """Initialize the backend with an optional timeout and model name.
+
+        Args:
+            timeout: Maximum seconds to wait for the CLI process to complete.
+            model: Gemini model name to pass via ``-m``; uses the CLI default if ``None``.
+        """
         self._timeout = timeout
         self._model = model
 
@@ -49,5 +55,5 @@ class GeminiCLIBackend:
                 if isinstance(data, dict) and "response" in data:
                     return str(data["response"])
             return raw
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             return raw

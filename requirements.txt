@@ -3,3 +3,4 @@ isort
 black
 mypy
 pylint
+ruff

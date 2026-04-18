@@ -17,7 +17,7 @@ class LLMBackend(Protocol):
 def get_backend(name: str = "gemini") -> LLMBackend:
     """Return an :class:`LLMBackend` implementation by *name*.
 
-    Raises
+    Raises:
     ------
     RuntimeError
         If the requested backend CLI tool is not found on ``$PATH``.

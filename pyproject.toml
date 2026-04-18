@@ -52,3 +52,9 @@ MD024 = false
 MD036 = false
 MD060 = false
 MD013 = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint]
+select = ["D"]  # Enable all pydocstyle (D) rules

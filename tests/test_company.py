@@ -8,6 +8,7 @@ from asw.company import COMPANY_DIR, SUBDIRS, init_company
 
 
 def test_init_creates_directories(tmp_path: Path) -> None:
+    """Test that init_company creates all expected subdirectories."""
     company = init_company(tmp_path)
 
     assert company == tmp_path / COMPANY_DIR
@@ -16,6 +17,7 @@ def test_init_creates_directories(tmp_path: Path) -> None:
 
 
 def test_init_copies_role_templates(tmp_path: Path) -> None:
+    """Test that init_company copies role template files."""
     company = init_company(tmp_path)
 
     roles_dir = company / "roles"
@@ -28,6 +30,7 @@ def test_init_copies_role_templates(tmp_path: Path) -> None:
 
 
 def test_init_idempotent(tmp_path: Path) -> None:
+    """Test that init_company can be called multiple times safely."""
     init_company(tmp_path)
     # Running again must not raise or overwrite existing files.
     company = init_company(tmp_path)

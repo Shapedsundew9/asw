@@ -9,6 +9,7 @@ from asw.gates import founder_review
 
 
 def test_approve(tmp_path: Path) -> None:
+    """Test founder approval returns 'a' with no feedback."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nSome content.\n")
 
@@ -20,6 +21,7 @@ def test_approve(tmp_path: Path) -> None:
 
 
 def test_reject(tmp_path: Path) -> None:
+    """Test founder rejection returns 'r' with no feedback."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
@@ -31,6 +33,7 @@ def test_reject(tmp_path: Path) -> None:
 
 
 def test_modify(tmp_path: Path) -> None:
+    """Test founder modification returns 'm' with feedback text."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
@@ -43,6 +46,7 @@ def test_modify(tmp_path: Path) -> None:
 
 
 def test_invalid_then_valid(tmp_path: Path) -> None:
+    """Test invalid inputs are rejected until a valid choice is given."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 

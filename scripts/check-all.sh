@@ -8,21 +8,27 @@ echo "=========================================="
 echo ""
 
 # Run markdown linting
-echo "[1/3] Markdown Linting"
+echo "[1/4] Markdown Linting"
 echo "---"
 ./scripts/lint-markdown.sh
 echo ""
 
 # Run python formatting
-echo "[2/3] Python Formatting"
+echo "[2/4] Python Formatting"
 echo "---"
 ./scripts/format-python.sh
 echo ""
 
 # Run python linting
-echo "[3/3] Python Linting"
+echo "[3/4] Python Linting"
 echo "---"
 ./scripts/lint-python.sh
+echo ""
+
+# Run ruff linting
+echo "[4/4] Ruff Linting"
+echo "---"
+./scripts/lint-ruff.sh
 echo ""
 
 echo "=========================================="
