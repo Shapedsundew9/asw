@@ -9,5 +9,5 @@ else
   echo "Python virtual environment already exists at .venv."
 fi
 
-echo "Installing package in editable mode..."
-.venv/bin/pip install -e .
+echo "Installing package and dev quality tools in editable mode..."
+.venv/bin/pip install -e .[dev]

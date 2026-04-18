@@ -8,4 +8,8 @@ sudo apt-get install -y --no-install-recommends ripgrep
 sudo rm -rf /var/lib/apt/lists/*
 
 echo "Installing npm CLIs..."
-npm install -g @google/gemini-cli @github/copilot
+npm install -g @google/gemini-cli @github/copilot markdownlint-cli2
+
+echo "Installing Python quality CLIs..."
+python3 -m pip install --upgrade pip
+python3 -m pip install --user black isort mypy pylint
