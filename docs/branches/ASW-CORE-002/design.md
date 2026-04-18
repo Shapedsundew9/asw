@@ -21,7 +21,7 @@ The `.company/` directory is the agents' shared reality — a vector-less memory
 
 ### V0.2 Layout
 
-```
+```text
 .company/
 ├── roles/          ← Markdown system prompts (bundled + generated)
 ├── artifacts/      ← Pipeline outputs (prd.md, architecture.json, roster.json, etc.)
@@ -199,7 +199,7 @@ After the roster is approved, the pipeline iterates through each role and genera
 
 ### Pipeline Integration
 
-```
+```text
 run_pipeline()
 ├── Phase A: CPO → PRD (unchanged)
 ├── Phase B: CTO → Architecture (returns architecture JSON string)
@@ -256,7 +256,7 @@ On each `run_pipeline()` invocation:
 5. If both conditions are met, **skip** the phase and load existing artifacts from disk for downstream context.
 6. If either condition fails, **run** the phase normally.
 
-```
+```text
 run_pipeline() — with resume
 │
 ├── Read pipeline_state.json
