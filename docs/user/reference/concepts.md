@@ -108,6 +108,7 @@ When you choose **M**, type your feedback line by line and press **Enter on a bl
 .company/
   roles/        ← Agent system prompts (editable)
   artifacts/    ← Documents produced by agents
+  state/        ← Internal pipeline state (managed by asw)
 ```
 
 This directory is committed to git at the end of each successful phase, giving you a full history of every artifact.

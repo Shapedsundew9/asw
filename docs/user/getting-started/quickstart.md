@@ -62,6 +62,8 @@ asw start --vision vision.md
 ✓ LLM backend: Gemini CLI
 
 >> CPO – attempt 1
+   Invoking CPO via Gemini CLI (may take up to 5 min)…
+   Response received.
    Lint passed for PRD.
 
 ✓ PRD written: .company/artifacts/prd.md
@@ -113,6 +115,7 @@ my-first-project/
       prd.md              ← Product Requirements Document
       architecture.json   ← Architecture spec
       architecture.md     ← Architecture diagram (Mermaid)
+    state/                ← Internal pipeline state
 ```
 
 Your git log will contain two auto-commits:

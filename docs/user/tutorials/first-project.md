@@ -81,6 +81,8 @@ You will see live progress in the terminal:
 ✓ LLM backend: Gemini CLI
 
 >> CPO – attempt 1
+   Invoking CPO via Gemini CLI (may take up to 5 min)…
+   Response received.
    Lint passed for PRD.
 
 ✓ PRD written: .company/artifacts/prd.md
@@ -151,6 +153,8 @@ The CTO agent then runs immediately:
 
 ```text
 >> CTO – attempt 1
+   Invoking CTO via Gemini CLI (may take up to 5 min)…
+   Response received.
    Lint passed for Architecture.
 
 ✓ Architecture JSON written: .company/artifacts/architecture.json
@@ -197,6 +201,7 @@ link-vault/
       prd.md
       architecture.json
       architecture.md
+    state/
 ```
 
 And your git log has two auto-commits:

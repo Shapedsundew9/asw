@@ -52,6 +52,15 @@ usage: asw [-h] {start} ...
 
 AgenticOrg CLI – orchestrate a simulated company of LLM-based software
 development agents.
+
+positional arguments:
+  {start}
+    start     Start the agentic SDLC pipeline from a vision document.
+
+options:
+  -h, --help  show this help message and exit
+
+Tip: use 'asw start --no-commit' to run without requiring a git repository.
 ```
 
 ## Working-Directory Requirement
