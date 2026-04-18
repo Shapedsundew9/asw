@@ -27,16 +27,18 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
         ``"a"`` (approve), ``"r"`` (reject), ``"m"`` (modify), ``"s"`` (stop)
         and *feedback* is the Founder's text when *choice* is ``"m"``, else ``None``.
     """
+    _preview_cap = 6000
     content = artifact_path.read_text(encoding="utf-8")
-    preview = content[:2000]
-    if len(content) > 2000:
-        preview += f"\n\n... ({len(content) - 2000} more characters)"
+    truncated = len(content) > _preview_cap
+    preview = content[:_preview_cap]
 
     print("\n" + "=" * 72)
     print(f"  FOUNDER REVIEW GATE  –  Phase: {phase_name}")
     print("=" * 72)
     print(f"\nArtifact: {artifact_path}\n")
     print(preview)
+    if truncated:
+        print(f"\n... ({len(content) - _preview_cap} more characters — to read in full: less {artifact_path})")
     print("\n" + "-" * 72)
 
     while True:
@@ -48,13 +50,16 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
 
     feedback: str | None = None
     if choice == "m":
-        print("Enter your modification feedback (end with an empty line):")
+        print("Enter your feedback below.")
+        print("Type each line and press Enter. Press Enter on a BLANK LINE to submit.")
+        print("-" * 72)
         lines: list[str] = []
         while True:
             line = input()
             if not line:
                 break
             lines.append(line)
+        print(f"──── Feedback captured ({len(lines)} line(s)) ────")
         feedback = "\n".join(lines)
 
     if choice == "s":

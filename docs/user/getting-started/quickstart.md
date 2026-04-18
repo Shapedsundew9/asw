@@ -15,6 +15,8 @@ git init
 git commit --allow-empty -m "Initial commit"
 ```
 
+> **Tip:** If you just want to experiment without creating a git repo, add `--no-commit` to the `asw start` command in Step 3. The git setup above can then be skipped.
+
 ## Step 2 — Write a Vision Document
 
 Create a file called `vision.md`. A vision document is a short plain-English description of what you want to build — think of it as a brief you hand to a founding team.
@@ -111,7 +113,6 @@ my-first-project/
       prd.md              ← Product Requirements Document
       architecture.json   ← Architecture spec
       architecture.md     ← Architecture diagram (Mermaid)
-    state/
 ```
 
 Your git log will contain two auto-commits:

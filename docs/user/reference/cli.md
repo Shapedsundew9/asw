@@ -28,6 +28,7 @@ asw start --vision <path> [--workdir <path>]
 |------|----------|---------|-------------|
 | `--vision VISION` | Yes | — | Path to the vision Markdown file. Can be relative or absolute. |
 | `--workdir WORKDIR` | No | Current directory | Working directory where `.company/` state is created. |
+| `--no-commit` | No | off | Skip git commits at phase boundaries. Useful for testing or drafts. |
 
 #### Examples
 
@@ -43,19 +44,25 @@ Point to a vision file and an explicit working directory:
 asw start --vision ~/ideas/saas-tool.md --workdir ~/projects/saas-tool
 ```
 
+Run without committing to git — useful for exploring agent output before you are ready to track changes:
+
+```bash
+asw start --vision vision.md --no-commit
+```
+
 #### Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Pipeline completed successfully |
-| `1` | A startup check failed (e.g. vision file not found, workdir missing) |
+| `1` | A startup check failed (e.g. vision file not found, workdir missing, not a git repo) |
 
 The pipeline also calls `sys.exit(0)` when the Founder chooses **[S]top** at a review gate, and `sys.exit(1)` when an agent fails to produce valid output after all retries are exhausted.
 
 ## Environment Requirements
 
 - The `gemini` CLI must be installed and on `$PATH` before running any command.
-- `--workdir` (or the current directory) must be inside a git repository.
+- `--workdir` (or the current directory) must be inside a git repository **unless** `--no-commit` is used.
 
 ## See Also
 

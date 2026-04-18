@@ -82,7 +82,9 @@ def _agent_loop(
 
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
         print(f"\n>> {agent.name} – attempt {attempt}")
+        print(f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…", flush=True)
         output = agent.run(context, feedback=feedback)
+        print("   Response received.")
 
         errors = lint_fn(output)  # type: ignore[operator]
         if not errors:
@@ -95,6 +97,7 @@ def _agent_loop(
 
         if attempt > _MAX_RETRIES:
             print(f"\nFATAL: {agent.name} failed to produce valid output after {_MAX_RETRIES + 1} attempts.")
+            print("  → Try simplifying your vision document and re-running `asw start`.")
             sys.exit(1)
 
         feedback = "The previous output failed mechanical validation." " Fix these errors:\n" + "\n".join(
@@ -151,7 +154,8 @@ def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -
     # 0. Validate git repo early (unless commits are disabled).
     if not no_commit and not is_git_repo(workdir):
         print(f"\nError: {workdir} is not inside a git repository.", file=sys.stderr)
-        print("Initialise a git repo first, or use --no-commit.", file=sys.stderr)
+        print("  Run: git init && git commit --allow-empty -m 'Initial commit'", file=sys.stderr)
+        print("  Or skip git entirely: asw start --vision <file> --no-commit", file=sys.stderr)
         return 1
 
     # 1. Initialise .company/ directory.
@@ -190,8 +194,8 @@ def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -
     )
     _write_architecture(raw_arch, company)
 
-    arch_json_path = company / "artifacts" / "architecture.json"
-    choice, feedback = founder_review("Architecture", arch_json_path)
+    arch_md_path = company / "artifacts" / "architecture.md"
+    choice, feedback = founder_review("Architecture", arch_md_path)
     while choice in ("r", "m"):
         founder_feedback = feedback if choice == "m" else None
         raw_arch = _agent_loop(
@@ -202,7 +206,7 @@ def run_pipeline(*, vision_path: Path, workdir: Path, no_commit: bool = False) -
             founder_feedback=founder_feedback,
         )
         _write_architecture(raw_arch, company)
-        choice, feedback = founder_review("Architecture", arch_json_path)
+        choice, feedback = founder_review("Architecture", arch_md_path)
 
     if not no_commit:
         try:

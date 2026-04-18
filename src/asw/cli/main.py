@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="asw",
         description=("AgenticOrg CLI – orchestrate a simulated company" " of LLM-based software development agents."),
+        epilog="Tip: use 'asw start --no-commit' to run without requiring a git repository.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

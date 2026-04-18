@@ -108,7 +108,6 @@ When you choose **M**, type your feedback line by line and press **Enter on a bl
 .company/
   roles/        ← Agent system prompts (editable)
   artifacts/    ← Documents produced by agents
-  state/        ← Reserved for future pipeline state
 ```
 
 This directory is committed to git at the end of each successful phase, giving you a full history of every artifact.
@@ -125,6 +124,16 @@ This directory is committed to git at the end of each successful phase, giving y
 ```
 
 Your working directory must be inside a git repository before you start. If there is nothing new to commit (e.g. the agent produced identical output on a retry), `asw` skips the commit silently.
+
+### Skipping Commits
+
+Pass `--no-commit` to disable all git operations for a run:
+
+```bash
+asw start --vision vision.md --no-commit
+```
+
+This is useful when you want to explore agent output before deciding whether to track it, or when running `asw` outside a git repository for quick experiments. The git-repo check is also skipped when `--no-commit` is set.
 
 ---
 

@@ -197,7 +197,6 @@ link-vault/
       prd.md
       architecture.json
       architecture.md
-    state/
 ```
 
 And your git log has two auto-commits:

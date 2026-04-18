@@ -46,6 +46,16 @@ graph TD
 ```
 ````
 
+## UX Review
+
+After completing any documentation task, produce a **UX Issues** section at the end of your response (not saved to disk). For each issue:
+
+1. Explore the CLI and source code to identify friction points that would confuse or slow down a new user.
+2. Rate each issue **High / Medium / Low** based on how much it would hurt the user experience.
+3. Format the list as a Markdown table with columns: **Priority**, **Area**, **Issue**, **Suggested Improvement**.
+
+Focus on observable behaviour (confusing error messages, missing feedback, unintuitive flags, undiscoverable features) rather than internal code quality.
+
 ## Output Format
 
 All output is Markdown files saved to `docs/user/`. Each file must:
