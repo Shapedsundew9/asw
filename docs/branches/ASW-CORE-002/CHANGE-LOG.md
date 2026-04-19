@@ -109,6 +109,7 @@ flowchart LR
 ### Changed
 
 - `run_pipeline()` — accepts new `restart` keyword argument; orchestration flow now wraps each phase in a skip-or-run check.
+- `write_pipeline_state()` now performs temp-file replacement, and git commits are tracked as separate completion markers so failed commits retry on rerun without forcing a fresh LLM phase.
 - `build_parser()` in `cli/main.py` — added `--restart` argument to the `start` subcommand.
 
 ### Tests

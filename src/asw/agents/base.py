@@ -6,6 +6,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from asw.llm.backend import LLMBackend
 
@@ -101,7 +102,7 @@ class Agent:
             context_summary,
             "yes" if feedback else "no",
         )
-        response = self.llm.invoke(system_prompt, user_prompt)
+        response = cast(str, self.llm.invoke(system_prompt, user_prompt))
         logger.debug(
             "Agent %s received response (%d chars, sha256=%s)",
             self.name,

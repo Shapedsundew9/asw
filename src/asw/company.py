@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
@@ -96,7 +98,25 @@ def write_pipeline_state(workdir: Path, state: dict) -> None:
     """Atomically write pipeline state to ``.company/pipeline_state.json``."""
     state_path = workdir / COMPANY_DIR / PIPELINE_STATE_FILE
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    state_text = json.dumps(state, indent=2) + "\n"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=state_path.parent,
+            prefix=f".{state_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(state_text)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        temp_path.replace(state_path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
     logger.debug("Pipeline state written: %s", state_path)
 
 

@@ -43,6 +43,36 @@ _REQUEST_MORE_QUESTIONS_FEEDBACK = (
 logger = logging.getLogger("asw.orchestrator")
 
 
+def _commit_phase_name(phase_name: str) -> str:
+    """Return the pipeline-state marker name for a git commit phase."""
+    return f"commit:{phase_name}"
+
+
+def _clear_phase_marker(workdir: Path, state: dict, phase: str) -> None:
+    """Remove a completion marker from pipeline state when it is no longer valid."""
+    completed = state.get("completed_phases", {})
+    if phase in completed:
+        del completed[phase]
+        write_pipeline_state(workdir, state)
+
+
+def _ensure_commit_complete(exec_ctx: PipelineExecutionContext, phase_name: str) -> int | None:
+    """Run a commit phase once and record its completion separately from generation."""
+    commit_phase = _commit_phase_name(phase_name)
+    if _is_phase_done(exec_ctx.state, commit_phase, []):
+        return None
+
+    err = _try_commit(
+        exec_ctx.workdir,
+        phase_name,
+        exec_ctx.options.no_commit,
+        stage_all=exec_ctx.options.stage_all,
+    )
+    if err is None:
+        mark_phase_complete(exec_ctx.workdir, exec_ctx.state, commit_phase)
+    return err
+
+
 def _agent_company(agent: Agent) -> Path | None:
     """Infer the company directory for *agent*, if available."""
     role_file = getattr(agent, "role_file", None)
@@ -738,16 +768,14 @@ def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int
     prd_path = exec_ctx.company / "artifacts" / "prd.md"
     if _is_phase_done(exec_ctx.state, "prd", [prd_path]):
         print("\n↩ Skipping PRD phase (already completed)")
-        return prd_path.read_text(encoding="utf-8"), None
+        prd_content = prd_path.read_text(encoding="utf-8")
+        err = _ensure_commit_complete(exec_ctx, "prd-generation")
+        return prd_content, err
 
+    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("prd-generation"))
     prd_content = _run_prd_phase(exec_ctx.company, exec_ctx.vision_content, exec_ctx.llm)
     mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "prd")
-    err = _try_commit(
-        exec_ctx.workdir,
-        "prd-generation",
-        exec_ctx.options.no_commit,
-        stage_all=exec_ctx.options.stage_all,
-    )
+    err = _ensure_commit_complete(exec_ctx, "prd-generation")
     return prd_content, err
 
 
@@ -760,16 +788,14 @@ def _run_or_skip_architecture_phase(
     arch_md_path = exec_ctx.company / "artifacts" / "architecture.md"
     if _is_phase_done(exec_ctx.state, "architecture", [arch_json_path, arch_md_path]):
         print("\n↩ Skipping Architecture phase (already completed)")
-        return arch_json_path.read_text(encoding="utf-8"), None
+        arch_json = arch_json_path.read_text(encoding="utf-8")
+        err = _ensure_commit_complete(exec_ctx, "architecture-generation")
+        return arch_json, err
 
+    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("architecture-generation"))
     arch_json = _run_architecture_phase(exec_ctx.company, exec_ctx.vision_content, prd_content, exec_ctx.llm)
     mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "architecture")
-    err = _try_commit(
-        exec_ctx.workdir,
-        "architecture-generation",
-        exec_ctx.options.no_commit,
-        stage_all=exec_ctx.options.stage_all,
-    )
+    err = _ensure_commit_complete(exec_ctx, "architecture-generation")
     return arch_json, err
 
 
@@ -797,6 +823,7 @@ def _run_or_skip_role_generation_phase(
         print("\n↩ Skipping Role Generation phase (already completed)")
         return None
 
+    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("hiring"))
     _run_role_generation(exec_ctx.company, arch_json, roster_json, exec_ctx.llm)
     role_paths = _expected_role_paths(exec_ctx.company, roster_json)
     if not role_paths or not all(path.is_file() for path in role_paths):
@@ -819,10 +846,7 @@ def _is_phase_done(state: dict | None, phase: str, artifact_paths: list[Path]) -
 
 
 def _prompt_vision_changed() -> str:
-    """Ask the user what to do when the vision file has changed.
-
-    Returns ``"continue"`` or ``"restart"``.
-    """
+    """Ask the user what to do when the vision file has changed."""
     print("\n⚠  The vision file has changed since the last pipeline run.")
     print("   Previously completed phases may be based on stale content.")
     while True:
@@ -848,11 +872,7 @@ def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: b
 
 
 def _init_pipeline_state(workdir: Path, vision_path: Path) -> tuple[dict, Path]:
-    """Load or create pipeline state, handling vision-change prompts.
-
-    Returns ``(state, company)`` where *company* is the resolved
-    ``.company/`` path (possibly rebuilt on restart).
-    """
+    """Load or create pipeline state and return ``(state, company)``."""
     company = init_company(workdir)
     print(f"\n✓ Company directory initialised: {company}")
 
@@ -876,10 +896,7 @@ def _init_pipeline_state(workdir: Path, vision_path: Path) -> tuple[dict, Path]:
 
 
 def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
-    """Execute or skip each pipeline phase based on *state*.
-
-    Returns 0 on success, non-zero on error.
-    """
+    """Execute or skip each pipeline phase based on *state*."""
     prd_content, err = _run_or_skip_prd_phase(exec_ctx)
     if err is not None:
         return err
@@ -893,12 +910,7 @@ def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
     if err is not None:
         return err
 
-    err = _try_commit(
-        exec_ctx.workdir,
-        "hiring",
-        exec_ctx.options.no_commit,
-        stage_all=exec_ctx.options.stage_all,
-    )
+    err = _ensure_commit_complete(exec_ctx, "hiring")
     if err is not None:
         return err
 
@@ -911,10 +923,7 @@ def run_pipeline(
     workdir: Path,
     options: PipelineRunOptions | None = None,
 ) -> int:
-    """Execute the full V0.2 SDLC pipeline.
-
-    Returns 0 on success.
-    """
+    """Execute the full V0.2 SDLC pipeline."""
     options = options or PipelineRunOptions()
     logger.debug(
         "run_pipeline called: vision_path=%s workdir=%s no_commit=%s stage_all=%s debug=%s restart=%s",

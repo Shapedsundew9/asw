@@ -15,7 +15,7 @@ class LLMBackend(Protocol):
 
     def invoke(self, system_prompt: str, user_prompt: str) -> str:
         """Send prompts to the model and return its text response."""
-        return ""
+        raise NotImplementedError
 
 
 def get_backend(name: str = "gemini") -> LLMBackend:

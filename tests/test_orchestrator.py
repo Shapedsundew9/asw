@@ -9,8 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from asw.company import hash_file, init_company, write_pipeline_state
+from asw.company import hash_file, init_company, read_pipeline_state, write_pipeline_state
 from asw.gates import FounderReviewResult
+from asw.git import GitError
 from asw.llm.errors import LLMInvocationError, TransientLLMError
 from asw.orchestrator import (
     PipelineRunOptions,
@@ -387,8 +388,6 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert "# Role: Python Backend Developer" in role_content
 
     # Verify pipeline state was written.
-    from asw.company import read_pipeline_state
-
     state = read_pipeline_state(tmp_path)
     assert state is not None
     for phase in ("prd", "architecture", "roster", "roles"):
@@ -632,6 +631,74 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
     # LLM was called because prd.md was missing, triggering all downstream phases.
     assert mock_llm.invoke.call_count == 4  # All phases ran.
     assert (company / "artifacts" / "prd.md").is_file()
+
+
+def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> None:
+    """A failed PRD commit should be retried on rerun without spending another PRD LLM call."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = _make_mock_llm()
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch(
+            "asw.orchestrator.commit_state",
+            side_effect=[GitError("commit failed"), "", "", ""],
+        ),
+    ):
+        first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
+        assert first_result == 1
+
+        state = read_pipeline_state(tmp_path)
+        assert state is not None
+        assert "prd" in state["completed_phases"]
+        assert "commit:prd-generation" not in state["completed_phases"]
+
+        second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert second_result == 0
+    assert mock_llm.invoke.call_count == 4
+
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert "commit:prd-generation" in state["completed_phases"]
+
+
+def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path) -> None:
+    """A failed final hiring commit should be retried on rerun without new LLM calls."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = _make_mock_llm()
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch(
+            "asw.orchestrator.commit_state",
+            side_effect=["", "", GitError("commit failed"), ""],
+        ),
+    ):
+        first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
+        assert first_result == 1
+
+        state = read_pipeline_state(tmp_path)
+        assert state is not None
+        assert "roles" in state["completed_phases"]
+        assert "commit:hiring" not in state["completed_phases"]
+
+        second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert second_result == 0
+    assert mock_llm.invoke.call_count == 4
+
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert "commit:hiring" in state["completed_phases"]
 
 
 def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
