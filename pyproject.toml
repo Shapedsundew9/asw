@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asw"
-version = "0.1.0"
+version = "0.2.0"
 description = "The Agentic Software Organization"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
+dependencies = [
+    "rich",
+    "questionary",
+]
 
 [project.scripts]
 asw = "asw.cli.main:main"
@@ -26,7 +30,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-asw = ["roles/*.md"]
+asw = ["roles/*.md", "templates/*.md", "standards/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

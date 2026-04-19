@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from asw.llm.backend import LLMBackend
 
 logger = logging.getLogger("asw.agents")
+
+
+def _checksum_prefix(content: str) -> str:
+    """Return a short checksum prefix for log correlation."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -28,6 +35,7 @@ class Agent:
     name: str
     role_file: Path
     llm: LLMBackend
+    standards: list[Path] = field(default_factory=list)
 
     def run(self, context: dict[str, str], *, feedback: str | None = None) -> str:
         """Execute the agent's role against the supplied *context*.
@@ -47,11 +55,34 @@ class Agent:
         """
         system_prompt = self.role_file.read_text(encoding="utf-8")
         logger.debug(
-            "Agent %s system prompt from %s (%d chars):\n%s",
+            "Agent %s loading role file %s (%d chars, sha256=%s)",
             self.name,
             self.role_file,
             len(system_prompt),
-            system_prompt,
+            _checksum_prefix(system_prompt),
+        )
+
+        # Append organisational standards to the system prompt.
+        loaded_standards = 0
+        for std_path in self.standards:
+            if std_path.is_file():
+                std_content = std_path.read_text(encoding="utf-8")
+                system_prompt += "\n\n---\n\n" + std_content
+                loaded_standards += 1
+                logger.debug(
+                    "Agent %s loading standard %s (%d chars, sha256=%s)",
+                    self.name,
+                    std_path,
+                    len(std_content),
+                    _checksum_prefix(std_content),
+                )
+
+        logger.debug(
+            "Agent %s assembled system prompt (%d chars, standards=%d, sha256=%s)",
+            self.name,
+            len(system_prompt),
+            loaded_standards,
+            _checksum_prefix(system_prompt),
         )
 
         parts: list[str] = []
@@ -62,7 +93,20 @@ class Agent:
             parts.append(f"### REVIEWER FEEDBACK\n\n{feedback}")
 
         user_prompt = "\n\n".join(parts)
-        logger.debug("Agent %s user prompt (%d chars):\n%s", self.name, len(user_prompt), user_prompt)
-        response = self.llm.invoke(system_prompt, user_prompt)  # pylint: disable=assignment-from-no-return
-        logger.debug("Agent %s LLM response (%d chars):\n%s", self.name, len(response), response)
+        context_summary = ", ".join(f"{key}={len(value)} chars" for key, value in context.items()) or "(none)"
+        logger.debug(
+            "Agent %s assembled user prompt (%d chars, sha256=%s, context=[%s], feedback=%s)",
+            self.name,
+            len(user_prompt),
+            _checksum_prefix(user_prompt),
+            context_summary,
+            "yes" if feedback else "no",
+        )
+        response = cast(str, self.llm.invoke(system_prompt, user_prompt))
+        logger.debug(
+            "Agent %s received response (%d chars, sha256=%s)",
+            self.name,
+            len(response),
+            _checksum_prefix(response),
+        )
         return response
