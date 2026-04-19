@@ -105,6 +105,8 @@ Check these first:
 
 If the PRD contains structured founder questions, `asw` asks them before showing the review menu. Your answers are written into the PRD locally, which lets you inspect the resolved decisions before any rerun happens.
 
+While those questions are pending, the review panel hides the raw structured question payload and the duplicate pending-question prose, so the CLI remains the single place where you answer them.
+
 Choose the review action that matches the situation:
 
 | Situation | Best Choice |
@@ -213,10 +215,7 @@ sed -n '1,220p' .company/templates/execution_plan_template.md
 sed -n '1,220p' .company/templates/role_template.md
 ```
 
-If you edit templates or standards after a completed run, the next
-`asw start --vision vision.md` still skips completed phases while their
-downstream artifacts exist. Use `--restart` when you want those edits to
-regenerate later artifacts without manually removing files.
+If you edit templates, standards, bundled role files, or the vision after a completed run, the next `asw start --vision vision.md` compares those tracked files against the saved phase snapshots in `.company/pipeline_state.json` and prompts at the earliest affected phase.
 
 ## 8 - Understand The Finished Workspace
 
@@ -270,8 +269,8 @@ asw start --vision vision.md
 
 Useful expectations:
 
-- If the saved artifacts are still present, completed phases are skipped.
-- If you changed the vision file, `asw` asks whether to continue or restart.
+- If the saved input and output hashes still match, completed phases are skipped.
+- If tracked inputs changed but the saved outputs still exist, `asw` asks whether to continue, rerun from that phase, or restart.
 - If you want a guaranteed clean slate, use `--restart`.
 
 Examples:

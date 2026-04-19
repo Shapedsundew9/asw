@@ -21,6 +21,15 @@ PIPELINE_STATE_FILE = "pipeline_state.json"
 FAILED_ARTIFACTS_DIR = "failed"
 
 
+def new_pipeline_state() -> dict:
+    """Return an empty pipeline state document."""
+    return {
+        "version": "0.2",
+        "tracked_files": {},
+        "phases": {},
+    }
+
+
 def _package_dir(name: str) -> Path:
     """Return the path to a bundled package sub-directory."""
     return Path(str(resources.files("asw").joinpath(name)))
@@ -77,6 +86,29 @@ def hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def tracked_path_key(workdir: Path, path: Path) -> str:
+    """Return a stable key for *path* relative to *workdir* when possible."""
+    resolved_workdir = workdir.resolve()
+    resolved_path = path.resolve()
+    try:
+        return resolved_path.relative_to(resolved_workdir).as_posix()
+    except ValueError:
+        return str(resolved_path)
+
+
+def snapshot_paths(workdir: Path, paths: list[Path]) -> dict[str, str | None]:
+    """Return the current hash snapshot for each tracked file path."""
+    snapshot: dict[str, str | None] = {}
+    for path in paths:
+        snapshot[tracked_path_key(workdir, path)] = hash_file(path) if path.is_file() else None
+    return snapshot
+
+
+def update_tracked_files(state: dict, snapshot: dict[str, str | None]) -> None:
+    """Merge a hash snapshot into the top-level tracked file catalog."""
+    state.setdefault("tracked_files", {}).update(snapshot)
 
 
 def read_pipeline_state(workdir: Path) -> dict | None:
@@ -163,13 +195,27 @@ def write_failed_artifact(
     return failed_path
 
 
-def mark_phase_complete(workdir: Path, state: dict, phase: str) -> dict:
+def mark_phase_complete(
+    workdir: Path,
+    state: dict,
+    phase: str,
+    *,
+    input_paths: list[Path] | None = None,
+    output_paths: list[Path] | None = None,
+) -> dict:
     """Record a phase as completed in *state* and persist to disk.
 
     Returns the updated state dict.
     """
-    state.setdefault("completed_phases", {})[phase] = {
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+    input_snapshot = snapshot_paths(workdir, input_paths or [])
+    output_snapshot = snapshot_paths(workdir, output_paths or [])
+    update_tracked_files(state, input_snapshot)
+    update_tracked_files(state, output_snapshot)
+
+    state.setdefault("phases", {})[phase] = {
+        "completed_at": datetime.now(tz=timezone.utc).isoformat(),
+        "inputs": input_snapshot,
+        "outputs": output_snapshot,
     }
     write_pipeline_state(workdir, state)
     return state

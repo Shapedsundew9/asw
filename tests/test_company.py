@@ -12,6 +12,7 @@ from asw.company import (
     hash_file,
     init_company,
     mark_phase_complete,
+    new_pipeline_state,
     read_pipeline_state,
     write_failed_artifact,
     write_pipeline_state,
@@ -124,7 +125,7 @@ def test_read_pipeline_state_corrupt(tmp_path: Path) -> None:
 def test_write_and_read_pipeline_state(tmp_path: Path) -> None:
     """Round-trip: write then read pipeline state."""
     init_company(tmp_path)
-    state = {"version": "0.2", "vision_sha256": "abc123", "completed_phases": {}}
+    state = new_pipeline_state()
     write_pipeline_state(tmp_path, state)
     loaded = read_pipeline_state(tmp_path)
     assert loaded == state
@@ -133,17 +134,25 @@ def test_write_and_read_pipeline_state(tmp_path: Path) -> None:
 def test_mark_phase_complete(tmp_path: Path) -> None:
     """mark_phase_complete records a phase and persists state."""
     init_company(tmp_path)
-    state: dict = {"version": "0.2", "vision_sha256": "abc", "completed_phases": {}}
+    state = new_pipeline_state()
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n")
+    prd = tmp_path / COMPANY_DIR / "artifacts" / "prd.md"
+    prd.write_text("# PRD\n")
     write_pipeline_state(tmp_path, state)
 
-    state = mark_phase_complete(tmp_path, state, "prd")
-    assert "prd" in state["completed_phases"]
-    assert "timestamp" in state["completed_phases"]["prd"]
+    state = mark_phase_complete(tmp_path, state, "prd", input_paths=[vision], output_paths=[prd])
+    assert "prd" in state["phases"]
+    assert "completed_at" in state["phases"]["prd"]
+    assert state["phases"]["prd"]["inputs"]["vision.md"] == hash_file(vision)
+    assert state["phases"]["prd"]["outputs"][".company/artifacts/prd.md"] == hash_file(prd)
+    assert state["tracked_files"]["vision.md"] == hash_file(vision)
+    assert state["tracked_files"][".company/artifacts/prd.md"] == hash_file(prd)
 
     # Verify it was persisted.
     loaded = read_pipeline_state(tmp_path)
     assert loaded is not None
-    assert "prd" in loaded["completed_phases"]
+    assert "prd" in loaded["phases"]
 
 
 def test_clear_company(tmp_path: Path) -> None:

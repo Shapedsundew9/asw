@@ -91,6 +91,8 @@ The CLI prints progress like this:
 
 The CPO may include structured founder questions in the PRD. When that happens, `asw` asks those questions first, writes your answers back into the artifact locally, and then returns you to the review flow.
 
+While those questions are pending, the review panel hides the raw structured question payload so you do not read the same question list twice.
+
 Once the artifact is ready for review, you can choose from these actions:
 
 | Choice | What Happens |
@@ -176,12 +178,9 @@ By default those commits stage only `.company/`. If you explicitly want the phas
 
 ## If You Run It Again
 
-Rerunning the same command resumes from saved state. If completed artifacts are still present, `asw` skips those phases, including generated roles when the expected role files from the approved roster still exist. If the vision file changed, `asw` asks whether to continue or restart from scratch.
+Rerunning the same command resumes from saved state. `asw` compares the current hashes of tracked inputs and outputs against the saved snapshots in `.company/pipeline_state.json`.
 
-The same skip rule still applies if you edited `.company/templates/` or
-`.company/standards/` after the last run. Use `--restart` when you want
-template or standards changes to regenerate execution plans, role briefs, or
-role prompts without manually removing artifacts.
+If a completed phase is still current, `asw` skips it. If a completed phase's outputs are missing or changed, `asw` reruns it. If its tracked inputs changed but the outputs still exist, `asw` lets you continue with the saved artifacts, rerun from that phase, or restart from scratch.
 
 Use `--restart` when you want to discard the existing `.company/` directory and rebuild it from scratch.
 

@@ -29,6 +29,7 @@ Your output MUST be a single, complete Markdown document with the following sect
 - If a `CURRENT_PRD` section is provided, treat it as the current draft and revise it instead of starting over from scratch.
 - If a `FOUNDER_ANSWERS` section is provided, those decisions are resolved and MUST be incorporated into the PRD.
 - Do NOT re-ask questions that already have answers in `FOUNDER_ANSWERS` or in the current PRD's structured founder question data. Only emit new `founder_questions` entries for genuinely unresolved issues.
+- When you include structured `founder_questions`, keep the Markdown `## Open Questions` section generic. Do NOT repeat the pending question list there because the CLI will present those questions interactively and persist the answers locally.
 - **Founder Questions:** If you have open questions or recommendations for the Founder, you MUST append a JSON block at the very end of your output containing a `founder_questions` array.
   Example:
 

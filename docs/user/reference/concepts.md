@@ -87,6 +87,8 @@ Agents may include structured `founder_questions` in their output. When that hap
 
 That means answering questions does **not** automatically spend another LLM call. You get to inspect the updated artifact before deciding what to do next.
 
+When pending founder questions exist, the Founder Review panel hides the raw structured question payload and the pending-question prose that would otherwise duplicate the CLI prompts. You answer the questions in the CLI first, then review the updated artifact.
+
 The review menu supports these actions:
 
 | Choice | Behavior |
@@ -163,7 +165,7 @@ Automatic retries are reserved for transient Gemini problems such as timeouts, r
 
 What each part does:
 
-- `pipeline_state.json` tracks completed phases and the vision hash used for resume behavior.
+- `pipeline_state.json` stores a tracked-file hash catalog plus per-phase input and output snapshots used for resume behavior.
 - `roles/` contains bundled role files plus generated specialist roles.
 - `artifacts/` contains PRD, architecture, roster, and other generated documents.
 - `memory/` is reserved for workflow memory documents.
@@ -194,14 +196,11 @@ Pass `--stage-all` when you explicitly want the phase commits to include changes
 
 Rerunning `asw start` usually resumes from saved state rather than starting over.
 
-- PRD, architecture, execution plan, and roster are skipped only when their expected artifacts still exist.
-- Role generation is skipped only when the generated role files expected by the approved roster still exist.
-- If the vision file changed, `asw` asks whether to continue or restart.
-- Editing files in `.company/templates/` or `.company/standards/` does not,
-  by itself, force a rerun while the expected downstream artifacts still
-  exist.
+- PRD, architecture, execution plan, roster, and role generation are skipped only when their saved input and output hashes still match the current tracked files.
+- Changes to the vision, bundled role files, templates, standards, or saved artifacts can invalidate the earliest affected completed phase.
+- When tracked inputs changed but the saved outputs still exist, `asw` lets you continue with the saved artifacts, rerun from that phase, or restart from scratch.
 - `--restart` forces a clean rebuild of `.company/`.
-- `--debug` writes detailed logs to a file for troubleshooting. If you pass a custom log path, its parent directory must already exist.
+- `--debug` writes detailed logs to a file for troubleshooting. If you pass a custom log path, `asw` creates missing parent directories automatically.
 
 See [Runs, State, and Recovery](runs-and-state.md) for the full behavior.
 

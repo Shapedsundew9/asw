@@ -80,26 +80,25 @@ def test_main_defaults_stage_all_to_false(tmp_path: Path) -> None:
     assert mock_run_pipeline.call_args.kwargs["options"].stage_all is False
 
 
-def test_main_fails_fast_for_missing_debug_log_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """CLI should reject debug log paths whose parent directories do not exist."""
+def test_main_creates_missing_debug_log_directory(tmp_path: Path) -> None:
+    """CLI should create missing parent directories for custom debug log paths."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision\n")
     missing_log = tmp_path / "logs" / "asw.log"
 
-    result = main(
-        [
-            "start",
-            "--vision",
-            str(vision),
-            "--workdir",
-            str(tmp_path),
-            "--debug",
-            str(missing_log),
-            "--no-commit",
-        ]
-    )
+    with patch("asw.orchestrator.run_pipeline", return_value=0):
+        result = main(
+            [
+                "start",
+                "--vision",
+                str(vision),
+                "--workdir",
+                str(tmp_path),
+                "--debug",
+                str(missing_log),
+                "--no-commit",
+            ]
+        )
 
-    assert result == 1
-    captured = capsys.readouterr()
-    assert "debug log directory does not exist" in captured.err
-    assert "Create the directory first" in captured.err
+    assert result == 0
+    assert missing_log.parent.is_dir()

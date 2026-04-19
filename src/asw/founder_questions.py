@@ -107,6 +107,20 @@ def _replace_founder_questions_block(content: str, updated_questions: list[dict]
     return content[: match.start()] + replacement + content[match.end() :]
 
 
+def _strip_founder_questions_block(content: str) -> str:
+    """Remove the structured founder-question JSON block from rendered Markdown."""
+    found = _find_founder_questions_block(content)
+    if found is None:
+        return content
+
+    _, match = found
+    updated = content[: match.start()].rstrip()
+    suffix = content[match.end() :].lstrip("\n")
+    if suffix:
+        updated += "\n\n" + suffix
+    return updated
+
+
 def _render_founder_question_section(questions: list[dict], *, heading: str) -> list[str]:
     """Render founder questions or answers as Markdown lines."""
     lines = [heading, ""]
@@ -129,6 +143,33 @@ def _render_founder_question_section(questions: list[dict], *, heading: str) -> 
             lines.append("   - Answer: Pending founder input")
     lines.append("")
     return lines
+
+
+def _strip_pending_founder_sections(content: str) -> str:
+    """Remove pending founder-question sections from founder review display."""
+    section_patterns = [
+        r"^##\s+Open Questions\s*$",
+        r"^##\s+Founder Input\s*$",
+        r"^###\s+Founder Input\s*$",
+    ]
+
+    updated = content
+    for heading_pattern in section_patterns:
+        updated = re.sub(
+            rf"(?ms){heading_pattern}.*?(?=^##\s+|^###\s+|\Z)",
+            "",
+            updated,
+        )
+
+    return re.sub(r"\n{3,}", "\n\n", updated).strip() + "\n"
+
+
+def _render_founder_review_content(content: str, questions: list[dict] | None) -> str:
+    """Project artifact content into the founder review display."""
+    rendered = _strip_founder_questions_block(content)
+    if questions:
+        rendered = _strip_pending_founder_sections(rendered)
+    return rendered
 
 
 def _replace_prd_open_questions_section(content: str, questions: list[dict]) -> str:

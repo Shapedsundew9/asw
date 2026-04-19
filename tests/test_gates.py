@@ -54,6 +54,23 @@ def test_modify(tmp_path: Path) -> None:
     assert not review.answers
 
 
+def test_execution_plan_modify_prompt_mentions_json(tmp_path: Path) -> None:
+    """Execution-plan modify prompts should advertise the direct JSON shortcut."""
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# Execution Plan\n\nContent.\n")
+
+    with (
+        patch("asw.gates.questionary.select") as mock_select,
+        patch("asw.gates.questionary.text") as mock_text,
+    ):
+        mock_select.return_value.ask.return_value = "modify"
+        mock_text.return_value.ask.return_value = "{}"
+        review = founder_review("Execution Plan", artifact)
+
+    assert review.action == "modify"
+    assert "paste a full execution-plan JSON object" in mock_text.call_args.args[0]
+
+
 def test_request_more_questions(tmp_path: Path) -> None:
     """Test founder can explicitly request another question round."""
     artifact = tmp_path / "artifact.md"
@@ -109,3 +126,33 @@ def test_founder_questions(tmp_path: Path) -> None:
         {"question": "DB choice?", "answer": "PG"},
         {"question": "Project name?", "answer": "My Project"},
     ]
+
+
+def test_founder_review_hides_pending_question_sections_and_json(tmp_path: Path) -> None:
+    """Founder review should not render pending question prose or raw JSON blocks."""
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text(
+        "## Open Questions\n\n"
+        "1. Which database should we use?\n"
+        '   - Choices: ["PostgreSQL", "SQLite"]\n\n'
+        "```json\n"
+        '{"founder_questions": [{"question": "Which database should we use?", "choices": ["PostgreSQL", "SQLite"]}]}'
+        "\n```\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("asw.gates.Markdown") as mock_markdown,
+        patch("asw.gates.questionary.select") as mock_select,
+    ):
+        mock_markdown.side_effect = lambda text: text
+        mock_select.return_value.ask.return_value = "PostgreSQL"
+        founder_review(
+            "PRD",
+            artifact,
+            questions=[{"question": "Which database should we use?", "choices": ["PostgreSQL", "SQLite"]}],
+        )
+
+    rendered = mock_markdown.call_args.args[0]
+    assert "Which database should we use?" not in rendered
+    assert "```json" not in rendered
