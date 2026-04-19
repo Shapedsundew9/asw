@@ -8,9 +8,11 @@ Complete reference for all `asw` commands and flags.
 asw [-h] <command> [options]
 ```
 
+Use `asw <command> --help` to print the flags for a specific command. Example: `asw start --help`.
+
 | Flag | Description |
 |------|-------------|
-| `-h`, `--help` | Print help and exit |
+| `-h`, `--help` | Print help for the current parser and exit. At the top level, use `asw <command> --help` to see subcommand flags. |
 
 ## Commands
 
