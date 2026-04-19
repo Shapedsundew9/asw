@@ -19,6 +19,7 @@ from asw.company import (
     write_failed_artifact,
     write_pipeline_state,
 )
+from asw.execution_plan import _lint_execution_plan, _write_execution_plan
 from asw.founder_questions import (
     _apply_founder_answers_to_content,
     _apply_founder_answers_to_prd,
@@ -28,6 +29,7 @@ from asw.founder_questions import (
 )
 from asw.gates import FounderReviewResult, founder_review
 from asw.git import GitError, commit_state, is_git_repo
+from asw.hiring import _expected_role_paths, _lint_roster, _write_roster
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
@@ -54,6 +56,12 @@ def _clear_phase_marker(workdir: Path, state: dict, phase: str) -> None:
     if phase in completed:
         del completed[phase]
         write_pipeline_state(workdir, state)
+
+
+def _clear_phase_markers(workdir: Path, state: dict, phases: list[str]) -> None:
+    """Remove multiple completion markers from pipeline state."""
+    for phase in phases:
+        _clear_phase_marker(workdir, state, phase)
 
 
 def _ensure_commit_complete(exec_ctx: PipelineExecutionContext, phase_name: str) -> int | None:
@@ -363,116 +371,6 @@ def _write_architecture(raw_arch: str, company: Path) -> None:
     print(f"✓ Architecture diagram written: {arch_md_path}")
 
 
-# ── Roster (Phase C1) helpers ────────────────────────────────────────────
-
-_ROSTER_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
-_ROSTER_REQUIRED_KEYS = {"title", "filename", "responsibility", "assigned_standards"}
-
-
-def _lint_roster_entry(entry: dict, prefix: str, available: set[str] | None, errors: list[str]) -> None:
-    """Validate a single roster entry and append any errors found."""
-    if not isinstance(entry["title"], str) or not entry["title"]:
-        errors.append(f"{prefix}.title: must be a non-empty string.")
-    if not isinstance(entry["filename"], str) or not _ROSTER_FILENAME_RE.match(entry["filename"]):
-        errors.append(f"{prefix}.filename: must match lowercase_underscore.md " f"(got '{entry.get('filename', '')}')")
-    if not isinstance(entry["responsibility"], str) or not entry["responsibility"]:
-        errors.append(f"{prefix}.responsibility: must be a non-empty string.")
-    if not isinstance(entry["assigned_standards"], list):
-        errors.append(f"{prefix}.assigned_standards: must be an array.")
-    elif available is not None:
-        for std in entry["assigned_standards"]:
-            if std not in available:
-                errors.append(f"{prefix}.assigned_standards: '{std}' not found in standards directory.")
-
-
-def _lint_roster(content: str, *, standards_dir: Path | None = None) -> list[str]:
-    """Validate Hiring Manager roster output.
-
-    Parameters
-    ----------
-    content:
-        Raw LLM output containing a fenced JSON block.
-    standards_dir:
-        Path to ``.company/standards/`` for validating ``assigned_standards``
-        entries.  When *None*, standards references are not checked.
-    """
-    errors: list[str] = []
-
-    json_block = _extract_json_block(content)
-    if json_block is None:
-        errors.append("No fenced ```json``` code block found in Hiring Manager output.")
-        return errors
-
-    try:
-        data = json.loads(json_block)
-    except json.JSONDecodeError as exc:
-        errors.append(f"JSON parse error: {exc}")
-        return errors
-
-    if not isinstance(data, dict) or "hired_agents" not in data:
-        errors.append("JSON must be an object with a 'hired_agents' key.")
-        return errors
-
-    agents = data["hired_agents"]
-    if not isinstance(agents, list) or len(agents) == 0:
-        errors.append("'hired_agents' must be a non-empty array.")
-        return errors
-
-    available: set[str] | None = None
-    if standards_dir is not None and standards_dir.is_dir():
-        available = {f.name for f in standards_dir.iterdir() if f.is_file()}
-
-    for idx, entry in enumerate(agents):
-        prefix = f"hired_agents[{idx}]"
-        if not isinstance(entry, dict):
-            errors.append(f"{prefix}: must be an object.")
-            continue
-        missing = _ROSTER_REQUIRED_KEYS - set(entry.keys())
-        if missing:
-            errors.append(f"{prefix}: missing keys: {', '.join(sorted(missing))}")
-            continue
-
-        _lint_roster_entry(entry, prefix, available, errors)
-
-    logger.debug("Roster lint result: %d error(s)", len(errors))
-    for err in errors:
-        logger.debug("  Roster lint error: %s", err)
-    return errors
-
-
-def _render_roster_markdown(json_str: str) -> str:
-    """Render a human-readable Markdown table from roster JSON."""
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        return "# Proposed Roster\n\n> **Warning:** Roster JSON could not be parsed.\n"
-
-    agents = data.get("hired_agents", [])
-    lines = [
-        "# Proposed Roster",
-        "",
-        "> **Source of Truth:** The roster specification is stored in `roster.json`.",
-        "",
-        "| # | Title | Filename | Responsibility | Standards |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for idx, agent in enumerate(agents, 1):
-        stds = _safe_join(agent.get("assigned_standards", [])) or "None"
-        lines.append(
-            f"| {idx} | {agent.get('title', 'N/A')} "
-            f"| {agent.get('filename', 'N/A')} "
-            f"| {agent.get('responsibility', 'N/A')} "
-            f"| {stds} |"
-        )
-    lines.append("")
-    lines.append(f"**Total: {len(agents)} role(s) proposed**")
-    founder_questions = data.get("founder_questions", [])
-    if isinstance(founder_questions, list) and founder_questions:
-        lines.append("")
-        lines.extend(_render_founder_question_section(founder_questions, heading="## Founder Input"))
-    return "\n".join(lines)
-
-
 # ── Role generation (Phase C2) helpers ───────────────────────────────────
 
 _ROLE_REQUIRED_SECTIONS = ["Output Format", "Strict Rules"]
@@ -497,6 +395,42 @@ def _lint_role(content: str) -> list[str]:
     for err in errors:
         logger.debug("  Role lint error: %s", err)
     return errors
+
+
+def _build_execution_plan_context(
+    company: Path,
+    vision_content: str,
+    prd_content: str,
+    architecture_json: str,
+) -> dict[str, str]:
+    """Build the base context for the execution-plan phase."""
+    context = {
+        "vision": vision_content,
+        "prd": prd_content,
+        "architecture": architecture_json,
+    }
+    template_path = company / "templates" / "execution_plan_template.md"
+    if template_path.is_file():
+        context["execution_plan_template"] = template_path.read_text(encoding="utf-8")
+    return context
+
+
+def _persist_execution_plan_artifact(raw_plan: str, company: Path) -> str:
+    """Extract and persist execution-plan JSON, returning the JSON payload."""
+    _, json_block = _lint_execution_plan(raw_plan)
+    assert json_block is not None  # noqa: S101
+    _write_execution_plan(json_block, company)
+    return json_block
+
+
+def _load_assigned_standards_content(standards_dir: Path, assigned_standards: list[str]) -> str:
+    """Return the concatenated standards content for a role entry."""
+    std_parts: list[str] = []
+    for std_name in assigned_standards:
+        std_path = standards_dir / std_name
+        if std_path.is_file():
+            std_parts.append(std_path.read_text(encoding="utf-8"))
+    return "\n\n---\n\n".join(std_parts) if std_parts else "(no standards assigned)"
 
 
 def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
@@ -584,22 +518,73 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
     return arch_json_path.read_text(encoding="utf-8")
 
 
-def _write_roster(roster_json_str: str, company: Path) -> None:
-    """Write roster artifacts to .company/artifacts/."""
-    roster_json_path = company / "artifacts" / "roster.json"
-    roster_json_path.write_text(roster_json_str, encoding="utf-8")
+def _run_execution_plan_phase(
+    company: Path,
+    vision_content: str,
+    prd_content: str,
+    architecture_json: str,
+    llm: LLMBackend,
+) -> str:
+    """Run the VP Engineering execution-plan phase including founder review."""
+    vpe = Agent(name="VP Engineering", role_file=company / "roles" / "vpe.md", llm=llm)
+    base_context = _build_execution_plan_context(company, vision_content, prd_content, architecture_json)
 
-    roster_md_path = company / "artifacts" / "roster.md"
-    roster_md_path.write_text(_render_roster_markdown(roster_json_str), encoding="utf-8")
+    raw_plan = _agent_loop(
+        vpe,
+        base_context,
+        lambda c: _lint_execution_plan(c)[0],
+        "Execution Plan",
+    )
+    json_block = _persist_execution_plan_artifact(raw_plan, company)
 
-    print(f"\n✓ Roster JSON written: {roster_json_path}")
-    print(f"✓ Roster summary written: {roster_md_path}")
+    plan_md_path = company / "artifacts" / "execution_plan.md"
+    review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+    while True:
+        if review.action == "approve":
+            return json_block
+
+        if review.action == "answer_questions":
+            logger.debug("Applying %d founder answer(s) locally to execution plan", len(review.answers))
+            raw_plan = _apply_founder_answers_to_content(raw_plan, review.answers)
+            json_block = _persist_execution_plan_artifact(raw_plan, company)
+            review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+            continue
+
+        if review.action == "modify" and review.feedback and review.feedback.strip().startswith("{"):
+            edit_errors, _ = _lint_execution_plan(f"```json\n{review.feedback}\n```")
+            if edit_errors:
+                print("\n  Edited execution plan has validation errors:")
+                for err in edit_errors:
+                    print(f"    - {err}")
+                print("  Please try again.\n")
+                review = founder_review("Execution Plan", plan_md_path)
+                continue
+            assert review.feedback is not None  # noqa: S101
+            json_block = review.feedback
+            raw_plan = f"```json\n{json_block}\n```"
+            _write_execution_plan(json_block, company)
+            review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+            continue
+
+        rerun_context = base_context
+        if review.action in {"modify", "request_more_questions"}:
+            rerun_context = _build_revision_context(base_context, "current_execution_plan", raw_plan)
+
+        raw_plan = _agent_loop(
+            vpe,
+            rerun_context,
+            lambda c: _lint_execution_plan(c)[0],
+            "Execution Plan",
+            founder_feedback=_review_feedback(review),
+        )
+        json_block = _persist_execution_plan_artifact(raw_plan, company)
+        review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
 
 
-def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) -> str:
-    """Run the Hiring Manager roster phase including founder review loop.
+def _run_roster_phase(company: Path, architecture_json: str, execution_plan_json: str, llm: LLMBackend) -> str:
+    """Run the Hiring Manager role-elaboration phase.
 
-    Returns the approved roster JSON string.
+    Returns the elaborated roster JSON string.
     """
     hm = Agent(
         name="Hiring Manager",
@@ -607,12 +592,15 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
         llm=llm,
     )
     standards_dir = company / "standards"
+    execution_plan = json.loads(execution_plan_json)
 
     # Build list of available standards filenames.
     available = sorted(f.name for f in standards_dir.iterdir() if f.is_file()) if standards_dir.is_dir() else []
 
     context = {
         "architecture": architecture_json,
+        "execution_plan": execution_plan_json,
+        "selected_team": json.dumps(execution_plan.get("selected_team", []), indent=2),
         "available_standards": "\n".join(f"- {s}" for s in available) if available else "(none)",
     }
 
@@ -626,81 +614,25 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
     json_block = _extract_json_block(raw_roster)
     assert json_block is not None  # lint passed, so this is guaranteed  # noqa: S101
     _write_roster(json_block, company)
-
-    roster_md_path = company / "artifacts" / "roster.md"
-    review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-    while True:
-        if review.action == "approve":
-            assert json_block is not None  # noqa: S101
-            return json_block
-
-        if review.action == "answer_questions":
-            logger.debug("Applying %d founder answer(s) locally to roster", len(review.answers))
-            raw_roster = _apply_founder_answers_to_content(raw_roster, review.answers)
-            json_block = _extract_json_block(raw_roster)
-            assert json_block is not None  # noqa: S101
-            _write_roster(json_block, company)
-            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-            continue
-
-        if review.action == "modify" and review.feedback and review.feedback.strip().startswith("{"):
-            # Founder is directly editing the roster JSON.
-            edit_errors = _lint_roster(f"```json\n{review.feedback}\n```", standards_dir=standards_dir)
-            if edit_errors:
-                print("\n  Edited roster has validation errors:")
-                for err in edit_errors:
-                    print(f"    - {err}")
-                print("  Please try again.\n")
-                review = founder_review("Roster", roster_md_path)
-                continue
-            json_block = review.feedback
-            assert json_block is not None  # noqa: S101
-            raw_roster = f"```json\n{json_block}\n```"
-            _write_roster(json_block, company)
-            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-            continue
-
-        rerun_context = context
-        if review.action in {"modify", "request_more_questions"}:
-            rerun_context = _build_revision_context(context, "current_roster", raw_roster)
-
-        raw_roster = _agent_loop(
-            hm,
-            rerun_context,
-            lambda c: _lint_roster(c, standards_dir=standards_dir),
-            "Roster",
-            founder_feedback=_review_feedback(review),
-        )
-        json_block = _extract_json_block(raw_roster)
-        assert json_block is not None  # noqa: S101
-        _write_roster(json_block, company)
-        review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
+    return json_block
 
 
 def _generate_single_role(
     entry: dict,
     company: Path,
-    architecture_json: str,
-    role_template: str,
+    shared_context: dict[str, str],
     llm: LLMBackend,
 ) -> None:
     """Generate a single role file from a roster entry."""
     title = entry["title"]
     standards_dir = company / "standards"
-
-    # Build assigned standards content.
-    std_parts: list[str] = []
-    for std_name in entry.get("assigned_standards", []):
-        std_path = standards_dir / std_name
-        if std_path.is_file():
-            std_parts.append(std_path.read_text(encoding="utf-8"))
-    standards_content = "\n\n---\n\n".join(std_parts) if std_parts else "(no standards assigned)"
+    standards_content = _load_assigned_standards_content(standards_dir, entry.get("assigned_standards", []))
 
     context = {
-        "architecture": architecture_json,
+        **shared_context,
         "role_title": title,
         "role_responsibility": entry["responsibility"],
-        "role_template": role_template,
+        "role_brief": json.dumps(entry, indent=2),
         "assigned_standards": standards_content,
     }
 
@@ -712,7 +644,13 @@ def _generate_single_role(
     print(f"   ✓ Generated role: {title} → {role_path}")
 
 
-def _run_role_generation(company: Path, architecture_json: str, roster_json: str, llm: LLMBackend) -> None:
+def _run_role_generation(
+    company: Path,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+    llm: LLMBackend,
+) -> None:
     """Generate individual role files for each entry in the approved roster."""
     roster = json.loads(roster_json)
     agents_list = roster["hired_agents"]
@@ -731,36 +669,19 @@ def _run_role_generation(company: Path, architecture_json: str, roster_json: str
         logger.debug("Role template missing at %s; continuing with empty template", template_path)
 
     total = len(agents_list)
+    shared_context = {
+        "architecture": architecture_json,
+        "execution_plan": execution_plan_json,
+        "role_template": role_template,
+    }
 
     print(f"\n>> Generating {total} role file(s)…")
 
     for idx, entry in enumerate(agents_list, 1):
         print(f"\n── Role {idx}/{total}: {entry['title']} ──")
-        _generate_single_role(entry, company, architecture_json, role_template, llm)
+        _generate_single_role(entry, company, shared_context, llm)
 
     print(f"\n✓ Generated {total} role file(s)")
-
-
-def _expected_role_paths(company: Path, roster_json: str) -> list[Path]:
-    """Return the generated role file paths expected from *roster_json*."""
-    try:
-        data = json.loads(roster_json)
-    except json.JSONDecodeError:
-        logger.warning("Could not parse roster JSON while building expected role paths")
-        return []
-
-    agents = data.get("hired_agents")
-    if not isinstance(agents, list):
-        logger.warning("Roster JSON missing hired_agents while building expected role paths")
-        return []
-
-    paths: list[Path] = []
-    for entry in agents:
-        filename = entry.get("filename") if isinstance(entry, dict) else None
-        if isinstance(filename, str) and filename:
-            paths.append(company / "roles" / filename)
-
-    return paths
 
 
 def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int | None]:
@@ -772,7 +693,20 @@ def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int
         err = _ensure_commit_complete(exec_ctx, "prd-generation")
         return prd_content, err
 
-    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("prd-generation"))
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("prd-generation"),
+            "architecture",
+            "execution_plan",
+            "roster",
+            "roles",
+            _commit_phase_name("architecture-generation"),
+            _commit_phase_name("execution-plan-generation"),
+            _commit_phase_name("hiring"),
+        ],
+    )
     prd_content = _run_prd_phase(exec_ctx.company, exec_ctx.vision_content, exec_ctx.llm)
     mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "prd")
     err = _ensure_commit_complete(exec_ctx, "prd-generation")
@@ -792,14 +726,61 @@ def _run_or_skip_architecture_phase(
         err = _ensure_commit_complete(exec_ctx, "architecture-generation")
         return arch_json, err
 
-    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("architecture-generation"))
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("architecture-generation"),
+            "execution_plan",
+            "roster",
+            "roles",
+            _commit_phase_name("execution-plan-generation"),
+            _commit_phase_name("hiring"),
+        ],
+    )
     arch_json = _run_architecture_phase(exec_ctx.company, exec_ctx.vision_content, prd_content, exec_ctx.llm)
     mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "architecture")
     err = _ensure_commit_complete(exec_ctx, "architecture-generation")
     return arch_json, err
 
 
-def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str) -> str:
+def _run_or_skip_execution_plan_phase(
+    exec_ctx: PipelineExecutionContext,
+    prd_content: str,
+    arch_json: str,
+) -> tuple[str, int | None]:
+    """Return execution-plan JSON, running the phase only when needed."""
+    plan_json_path = exec_ctx.company / "artifacts" / "execution_plan.json"
+    plan_md_path = exec_ctx.company / "artifacts" / "execution_plan.md"
+    if _is_phase_done(exec_ctx.state, "execution_plan", [plan_json_path, plan_md_path]):
+        print("\n↩ Skipping Execution Plan phase (already completed)")
+        plan_json = plan_json_path.read_text(encoding="utf-8")
+        err = _ensure_commit_complete(exec_ctx, "execution-plan-generation")
+        return plan_json, err
+
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("execution-plan-generation"),
+            "roster",
+            "roles",
+            _commit_phase_name("hiring"),
+        ],
+    )
+    plan_json = _run_execution_plan_phase(
+        exec_ctx.company,
+        exec_ctx.vision_content,
+        prd_content,
+        arch_json,
+        exec_ctx.llm,
+    )
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "execution_plan")
+    err = _ensure_commit_complete(exec_ctx, "execution-plan-generation")
+    return plan_json, err
+
+
+def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str, execution_plan_json: str) -> str:
     """Return roster JSON, running the phase only when needed."""
     roster_json_path = exec_ctx.company / "artifacts" / "roster.json"
     roster_md_path = exec_ctx.company / "artifacts" / "roster.md"
@@ -807,7 +788,15 @@ def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str
         print("\n↩ Skipping Roster phase (already completed)")
         return roster_json_path.read_text(encoding="utf-8")
 
-    roster_json = _run_roster_phase(exec_ctx.company, arch_json, exec_ctx.llm)
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            "roles",
+            _commit_phase_name("hiring"),
+        ],
+    )
+    roster_json = _run_roster_phase(exec_ctx.company, arch_json, execution_plan_json, exec_ctx.llm)
     mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "roster")
     return roster_json
 
@@ -815,6 +804,7 @@ def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str
 def _run_or_skip_role_generation_phase(
     exec_ctx: PipelineExecutionContext,
     arch_json: str,
+    execution_plan_json: str,
     roster_json: str,
 ) -> int | None:
     """Run role generation when needed and validate expected files."""
@@ -824,7 +814,7 @@ def _run_or_skip_role_generation_phase(
         return None
 
     _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("hiring"))
-    _run_role_generation(exec_ctx.company, arch_json, roster_json, exec_ctx.llm)
+    _run_role_generation(exec_ctx.company, arch_json, execution_plan_json, roster_json, exec_ctx.llm)
     role_paths = _expected_role_paths(exec_ctx.company, roster_json)
     if not role_paths or not all(path.is_file() for path in role_paths):
         print("\nError: role generation completed without writing all expected role files.", file=sys.stderr)
@@ -905,8 +895,12 @@ def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
     if err is not None:
         return err
 
-    roster_json = _run_or_skip_roster_phase(exec_ctx, arch_json)
-    err = _run_or_skip_role_generation_phase(exec_ctx, arch_json, roster_json)
+    execution_plan_json, err = _run_or_skip_execution_plan_phase(exec_ctx, prd_content, arch_json)
+    if err is not None:
+        return err
+
+    roster_json = _run_or_skip_roster_phase(exec_ctx, arch_json, execution_plan_json)
+    err = _run_or_skip_role_generation_phase(exec_ctx, arch_json, execution_plan_json, roster_json)
     if err is not None:
         return err
 

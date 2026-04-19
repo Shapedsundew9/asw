@@ -33,11 +33,12 @@ def test_init_copies_role_templates(tmp_path: Path) -> None:
 
     roles_dir = company / "roles"
     role_files = list(roles_dir.glob("*.md"))
-    assert len(role_files) >= 2  # cpo.md and cto.md at minimum
+    assert len(role_files) >= 5
 
     names = {f.name for f in role_files}
     assert "cpo.md" in names
     assert "cto.md" in names
+    assert "vpe.md" in names
 
 
 def test_init_copies_templates(tmp_path: Path) -> None:
@@ -48,6 +49,7 @@ def test_init_copies_templates(tmp_path: Path) -> None:
     template_files = {f.name for f in templates_dir.glob("*.md")}
     assert "prd_template.md" in template_files
     assert "architecture_template.md" in template_files
+    assert "execution_plan_template.md" in template_files
     assert "role_template.md" in template_files
 
 

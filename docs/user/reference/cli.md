@@ -88,7 +88,7 @@ asw start --vision vision.md --restart
 
 On a later run:
 
-- PRD, architecture, and roster are skipped only if their expected artifacts are still present.
+- PRD, architecture, execution plan, and roster are skipped only if their expected artifacts are still present.
 - Role generation is skipped only if the generated role files expected by the approved roster are still present.
 - If the vision file changed, `asw` asks whether to continue from the saved state or restart from scratch.
 - `--restart` bypasses saved state by deleting `.company/` before the run begins.

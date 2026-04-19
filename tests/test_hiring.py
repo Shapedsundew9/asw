@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from asw.orchestrator import _lint_role, _lint_roster, _render_roster_markdown
+from asw.hiring import _lint_roster, _render_roster_markdown
+from asw.orchestrator import _lint_role
 
 # ── _lint_roster tests ──────────────────────────────────────────────────
 
@@ -21,12 +22,20 @@ _VALID_ROSTER = {
             "title": "Backend Developer",
             "filename": "backend_developer.md",
             "responsibility": "Implement API endpoints.",
+            "mission": "Deliver the first backend milestone.",
+            "scope": "Own the service layer and persistence path for Phase 1.",
+            "key_deliverables": ["Implement API endpoints", "Write backend tests"],
+            "collaborators": ["Founder", "Frontend Developer"],
             "assigned_standards": ["python_guidelines.md"],
         },
         {
             "title": "Frontend Developer",
             "filename": "frontend_developer.md",
             "responsibility": "Build UI components.",
+            "mission": "Deliver the core user workflow UI.",
+            "scope": "Own the initial user interface for the approved Phase 1 scope.",
+            "key_deliverables": ["Build the first workflow UI", "Write UI acceptance checks"],
+            "collaborators": ["Backend Developer", "Founder"],
             "assigned_standards": ["ui_guidelines.md"],
         },
     ]
@@ -85,6 +94,10 @@ def test_lint_roster_bad_filename() -> None:
                 "title": "Dev",
                 "filename": "Bad-Name.md",
                 "responsibility": "Code.",
+                "mission": "Ship code.",
+                "scope": "Own one slice of the product.",
+                "key_deliverables": ["Deliver feature work"],
+                "collaborators": ["Founder"],
                 "assigned_standards": [],
             }
         ]
@@ -105,6 +118,10 @@ def test_lint_roster_unknown_standard(tmp_path: Path) -> None:
                 "title": "Dev",
                 "filename": "dev.md",
                 "responsibility": "Code.",
+                "mission": "Ship code.",
+                "scope": "Own one slice of the product.",
+                "key_deliverables": ["Deliver feature work"],
+                "collaborators": ["Founder"],
                 "assigned_standards": ["nonexistent.md"],
             }
         ]
@@ -121,6 +138,10 @@ def test_lint_roster_no_standards_dir() -> None:
                 "title": "Dev",
                 "filename": "dev.md",
                 "responsibility": "Code.",
+                "mission": "Ship code.",
+                "scope": "Own one slice of the product.",
+                "key_deliverables": ["Deliver feature work"],
+                "collaborators": ["Founder"],
                 "assigned_standards": ["anything.md"],
             }
         ]
@@ -196,7 +217,8 @@ def test_render_roster_markdown() -> None:
     assert "Backend Developer" in md
     assert "Frontend Developer" in md
     assert "backend_developer.md" in md
-    assert "**Total: 2 role(s) proposed**" in md
+    assert "Deliver the first backend milestone." in md
+    assert "**Total: 2 role(s) elaborated**" in md
 
 
 def test_render_roster_markdown_invalid_json() -> None:

@@ -43,8 +43,8 @@ flowchart TD
 
 In practice this means:
 
-- If PRD, architecture, and roster artifacts still exist, those completed phases can be skipped on a later run.
-- For PRD, architecture, and roster, if a phase is marked complete but one of its required artifacts is missing, `asw` reruns that phase and the phases after it.
+- If PRD, architecture, execution-plan, and roster artifacts still exist, those completed phases can be skipped on a later run.
+- For PRD, architecture, execution plan, and roster, if a phase is marked complete but one of its required artifacts is missing, `asw` reruns that phase and the phases after it.
 - Role generation is skipped only if the generated role files implied by the approved roster still exist on disk.
 - Resume works even when you used `--no-commit`; saved state is separate from git.
 
@@ -54,7 +54,7 @@ If the vision file contents change after a previous run, `asw` detects the new h
 
 Use **Continue** when your edit is small and the existing artifacts are still acceptable.
 
-Use **Restart** when the product scope, target users, technical assumptions, or hiring plan changed enough that the saved PRD or architecture is no longer trustworthy.
+Use **Restart** when the product scope, target users, technical assumptions, or execution plan changed enough that the saved PRD or architecture is no longer trustworthy.
 
 ## Force A Clean Restart
 
@@ -69,6 +69,7 @@ This deletes `.company/` before the run starts and then rebuilds it from the bun
 Common reasons to use `--restart`:
 
 - You want a completely fresh PRD and architecture.
+- You want a fresh execution plan and first-phase team recommendation.
 - You significantly rewrote the vision file.
 - You manually edited artifacts and want to discard those edits.
 - You suspect saved state and on-disk artifacts are out of sync.
@@ -85,7 +86,8 @@ asw start --vision vision.md
 
 Examples:
 
-- If PRD and architecture were already approved, the rerun starts at the roster phase.
+- If PRD and architecture were already approved, the rerun starts at the execution-plan phase.
+- If `execution_plan.json` was deleted after a previous run, the execution-plan phase runs again.
 - If `roster.json` was deleted after a previous run, the roster phase runs again.
 - If a generated role file was deleted after a previous run, the roles phase runs again.
 - If all reviewable artifacts and expected generated role files still exist, the rerun quickly skips everything.

@@ -9,14 +9,16 @@ This page explains the core ideas behind the V0.2 workflow so you can predict wh
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d6a4f', 'primaryTextColor': '#d8f3dc', 'primaryBorderColor': '#52b788', 'lineColor': '#74c69d', 'secondaryColor': '#1b4332', 'tertiaryColor': '#40916c', 'edgeLabelBackground': '#1b4332'}}}%%
 graph TD
-    A[Vision Document] --> B[PRD Phase - CPO]
-    B --> C[Architecture Phase - CTO]
-    C --> D[Roster Phase - Hiring Manager]
-    D --> E[Role Generation - Role Writer]
-    E --> F[Pipeline Complete]
-    B --> G[Commit prd-generation]
-    C --> H[Commit architecture-generation]
-    E --> I[Commit hiring]
+  vision[Vision Document] --> prd[PRD Phase - CPO]
+  prd --> arch[Architecture Phase - CTO]
+  arch --> execplan[Execution Plan Phase - VP Engineering]
+  execplan --> briefs[Role Brief Phase - Hiring Manager]
+  briefs --> roles[Role Generation - Role Writer]
+  roles --> done[Pipeline Complete]
+  prd --> commit_prd[Commit prd-generation]
+  arch --> commit_arch[Commit architecture-generation]
+  execplan --> commit_exec[Commit execution-plan-generation]
+  roles --> commit_hiring[Commit hiring]
 ```
 
 ### Phase A - PRD
@@ -30,16 +32,27 @@ The CTO reads the vision and approved PRD, then produces:
 - `architecture.json` for the machine-readable system specification.
 - `architecture.md` for the human-readable summary and Mermaid diagram.
 
-### Phase C1 - Roster
+### Phase C - Execution Plan
 
-The Hiring Manager reads `architecture.json` and the available standards files, then proposes:
+The VP Engineering reads the vision, approved PRD, and approved architecture, then produces:
 
-- `roster.json` with role metadata.
-- `roster.md` with a human-readable table for review.
+- `execution_plan.json` for the machine-readable phased delivery plan and Phase 1 team selection.
+- `execution_plan.md` for the human-readable summary and Founder review artifact.
 
-### Phase C2 - Role Generation
+This is the phase where the Founder approves the initial hiring plan. The VP Engineering decides what must be built now, what can be deferred, and which roles are justified for the first phase.
 
-After the roster is approved, the Role Writer generates one Markdown role prompt per approved roster entry. These files are written into `.company/roles/` and no extra Founder gate runs for this phase.
+### Phase D - Role Briefs
+
+The Hiring Manager reads `architecture.json`, `execution_plan.json`, and the available standards files, then elaborates the approved team into:
+
+- `roster.json` with role-brief metadata.
+- `roster.md` with a human-readable summary of those operating briefs.
+
+This phase runs automatically with no Founder gate. The Hiring Manager does not choose who to hire; that decision was already made by the VP Engineering and approved by the Founder.
+
+### Phase E - Role Generation
+
+After the role briefs are generated, the Role Writer generates one Markdown role prompt per approved roster entry. These files are written into `.company/roles/` and no extra Founder gate runs for this phase.
 
 ## How A Single Phase Runs
 
@@ -84,7 +97,7 @@ The review menu supports these actions:
 | Request More Questions | Ask for another question round focused on unresolved issues |
 | Stop | Exit cleanly with code `0` |
 
-For the roster phase, **Modify** has an extra shortcut: if you paste a JSON object directly, `asw` validates it and uses that edited roster without calling the Hiring Manager again.
+For the execution-plan phase, **Modify** has an extra shortcut: if you paste a JSON object directly, `asw` validates it and uses that edited plan without calling the VP Engineering again.
 
 ## Agents, Roles, And Standards
 
@@ -94,10 +107,11 @@ Each agent is driven by a role file in `.company/roles/`. On the first run, `asw
 |-------|-----------|----------------|
 | CPO | `.company/roles/cpo.md` | `.company/artifacts/prd.md` |
 | CTO | `.company/roles/cto.md` | `.company/artifacts/architecture.json` and `architecture.md` |
+| VP Engineering | `.company/roles/vpe.md` | `.company/artifacts/execution_plan.json` and `execution_plan.md` |
 | Hiring Manager | `.company/roles/hiring_manager.md` | `.company/artifacts/roster.json` and `roster.md` |
 | Role Writer | `.company/roles/role_writer.md` | Generated role prompts in `.company/roles/` |
 
-Standards files live in `.company/standards/`. The Hiring Manager assigns standards to each generated role through the `assigned_standards` field in the roster, and the Role Writer incorporates those standards into the generated prompt.
+Standards files live in `.company/standards/`. The Hiring Manager assigns standards while elaborating each approved role brief, and the Role Writer incorporates those standards into the generated prompt.
 
 ## Mechanical Linting And Retries
 
@@ -109,7 +123,8 @@ Examples of lint checks:
 - Acceptance criteria must use completed checklist items like `- [x]`.
 - Mermaid code blocks must be present where required.
 - Architecture output must contain valid JSON and Mermaid blocks.
-- Roster output must be valid JSON with `hired_agents` entries.
+- Execution-plan output must be valid JSON with phases, selected team entries, and deferred work.
+- Roster output must be valid JSON with `hired_agents` role-brief entries.
 - Generated role files must include the required sections and minimum structure.
 
 If linting fails, `asw` exits. This is intentional: the invalid output already exists, so resubmitting the same run automatically would burn more tokens without any Founder intervention.
@@ -150,6 +165,7 @@ When commits are enabled, `asw` stages `.company/` by default. If you pass `--st
 ```text
 [asw] Phase: prd-generation completed
 [asw] Phase: architecture-generation completed
+[asw] Phase: execution-plan-generation completed
 [asw] Phase: hiring completed
 ```
 
@@ -163,7 +179,7 @@ Pass `--stage-all` when you explicitly want the phase commits to include changes
 
 Rerunning `asw start` usually resumes from saved state rather than starting over.
 
-- PRD, architecture, and roster are skipped only when their expected artifacts still exist.
+- PRD, architecture, execution plan, and roster are skipped only when their expected artifacts still exist.
 - Role generation is skipped only when the generated role files expected by the approved roster still exist.
 - If the vision file changed, `asw` asks whether to continue or restart.
 - `--restart` forces a clean rebuild of `.company/`.

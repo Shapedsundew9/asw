@@ -187,6 +187,45 @@ graph TD
 ```
 """
 
+_CANNED_EXECUTION_PLAN = """\
+```json
+{
+    "phases": [
+        {
+            "id": "phase_1",
+            "name": "Local Validation",
+            "objective": "Validate the core workflow locally before production hardening.",
+            "scope": "Use local-only infrastructure and defer hosted operations.",
+            "deliverables": ["Core flow works locally", "Acceptance checks exist"],
+            "exit_criteria": ["Founder can run the product locally", "Core checks pass"],
+            "selected_team_roles": ["Python Backend Developer"]
+        }
+    ],
+    "selected_team": [
+        {
+            "title": "Python Backend Developer",
+            "filename": "python_backend_developer.md",
+            "responsibility": "Implement CLI entry point and orchestrator logic.",
+            "rationale": "This role is immediately needed to build the first validated product slice."
+        }
+    ],
+    "generic_role_catalog": [
+        {
+            "title": "DevOps Engineer",
+            "summary": "Own deployment automation and runtime operations.",
+            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+        }
+    ],
+    "deferred_roles_or_capabilities": [
+        {
+            "name": "Production DevOps",
+            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
+        }
+    ]
+}
+```
+"""
+
 _CANNED_ROSTER = """\
 ```json
 {
@@ -195,6 +234,13 @@ _CANNED_ROSTER = """\
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
             "responsibility": "Implement CLI entry point and orchestrator logic.",
+            "mission": "Deliver the first validated backend workflow for Phase 1.",
+            "scope": "Own the CLI entry point, orchestration flow, and first persistence path for local validation.",
+            "key_deliverables": [
+                "Implement the first CLI workflow",
+                "Write backend and orchestration tests"
+            ],
+            "collaborators": ["Founder", "Documentation Standards Lead"],
             "assigned_standards": ["python_guidelines.md"]
         }
     ]
@@ -306,20 +352,44 @@ graph TD
 ```
 """
 
-_CANNED_ROSTER_WITH_QUESTIONS = """\
+_CANNED_EXECUTION_PLAN_WITH_QUESTIONS = """\
 ```json
 {
-    "hired_agents": [
+    "phases": [
+        {
+            "id": "phase_1",
+            "name": "Local Validation",
+            "objective": "Validate the core workflow locally before production hardening.",
+            "scope": "Use local-only infrastructure and defer hosted operations.",
+            "deliverables": ["Core flow works locally"],
+            "exit_criteria": ["Founder can run the product locally"],
+            "selected_team_roles": ["Python Backend Developer"]
+        }
+    ],
+    "selected_team": [
         {
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
             "responsibility": "Implement CLI entry point and orchestrator logic.",
-            "assigned_standards": ["python_guidelines.md"]
+            "rationale": "This role is immediately needed to build the first validated product slice."
+        }
+    ],
+    "generic_role_catalog": [
+        {
+            "title": "DevOps Engineer",
+            "summary": "Own deployment automation and runtime operations.",
+            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+        }
+    ],
+    "deferred_roles_or_capabilities": [
+        {
+            "name": "Production DevOps",
+            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
         }
     ],
     "founder_questions": [
         {
-            "question": "Should we hire frontend support now?",
+            "question": "Should Phase 1 remain local-only?",
             "choices": ["Yes", "No"]
         }
     ]
@@ -328,10 +398,17 @@ _CANNED_ROSTER_WITH_QUESTIONS = """\
 """
 
 
+def _extract_json_block(content: str) -> str:
+    """Extract the JSON body from a fenced JSON block."""
+    return content.split("```json\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+
+
 def _make_mock_llm() -> MagicMock:
     """Create a mock LLM backend that returns canned responses for all phases."""
     mock = MagicMock()
-    mock.invoke = MagicMock(side_effect=[_CANNED_PRD, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock.invoke = MagicMock(
+        side_effect=[_CANNED_PRD, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+    )
     return mock
 
 
@@ -375,12 +452,18 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert arch["project_name"] == "agenticorg"
 
     # Verify V0.2 hiring artifacts were written.
+    assert (company / "artifacts" / "execution_plan.json").is_file()
+    assert (company / "artifacts" / "execution_plan.md").is_file()
     assert (company / "artifacts" / "roster.json").is_file()
     assert (company / "artifacts" / "roster.md").is_file()
+
+    execution_plan = json.loads((company / "artifacts" / "execution_plan.json").read_text())
+    assert execution_plan["selected_team"][0]["title"] == "Python Backend Developer"
 
     roster = json.loads((company / "artifacts" / "roster.json").read_text())
     assert len(roster["hired_agents"]) == 1
     assert roster["hired_agents"][0]["title"] == "Python Backend Developer"
+    assert roster["hired_agents"][0]["mission"] == "Deliver the first validated backend workflow for Phase 1."
 
     # Verify generated role file was written.
     assert (company / "roles" / "python_backend_developer.md").is_file()
@@ -390,7 +473,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # Verify pipeline state was written.
     state = read_pipeline_state(tmp_path)
     assert state is not None
-    for phase in ("prd", "architecture", "roster", "roles"):
+    for phase in ("prd", "architecture", "execution_plan", "roster", "roles"):
         assert phase in state["completed_phases"]
 
 
@@ -401,7 +484,9 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
     _setup_git_repo(tmp_path)
 
     mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock_llm.invoke = MagicMock(
+        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+    )
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
@@ -421,7 +506,7 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     prd_content = (tmp_path / ".company" / "artifacts" / "prd.md").read_text(encoding="utf-8")
     assert "- Answer: PostgreSQL" in prd_content
@@ -429,7 +514,7 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
 
 
 def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> None:
-    """PRD, architecture, and roster answers should all avoid extra LLM calls."""
+    """PRD, architecture, and execution-plan answers should all avoid extra LLM calls."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
@@ -439,7 +524,8 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
         side_effect=[
             _CANNED_PRD_WITH_QUESTIONS,
             _CANNED_ARCH_WITH_QUESTIONS,
-            _CANNED_ROSTER_WITH_QUESTIONS,
+            _CANNED_EXECUTION_PLAN_WITH_QUESTIONS,
+            _CANNED_ROSTER,
             _CANNED_ROLE,
         ]
     )
@@ -461,7 +547,7 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
                 _APPROVE_REVIEW,
                 FounderReviewResult(
                     action="answer_questions",
-                    answers=[{"question": "Should we hire frontend support now?", "answer": "No"}],
+                    answers=[{"question": "Should Phase 1 remain local-only?", "answer": "Yes"}],
                 ),
                 _APPROVE_REVIEW,
             ],
@@ -470,13 +556,13 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     company = tmp_path / ".company" / "artifacts"
     assert '"answer": "Yes"' in (company / "architecture.json").read_text(encoding="utf-8")
     assert "Answer: Yes" in (company / "architecture.md").read_text(encoding="utf-8")
-    assert '"answer": "No"' in (company / "roster.json").read_text(encoding="utf-8")
-    assert "Answer: No" in (company / "roster.md").read_text(encoding="utf-8")
+    assert '"answer": "Yes"' in (company / "execution_plan.json").read_text(encoding="utf-8")
+    assert "Answer: Yes" in (company / "execution_plan.md").read_text(encoding="utf-8")
 
 
 def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_path: Path) -> None:
@@ -487,7 +573,14 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
 
     mock_llm = MagicMock()
     mock_llm.invoke = MagicMock(
-        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_PRD, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE]
+        side_effect=[
+            _CANNED_PRD_WITH_QUESTIONS,
+            _CANNED_PRD,
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+        ]
     )
 
     with (
@@ -512,7 +605,7 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 6
 
     second_user_prompt = mock_llm.invoke.call_args_list[1].args[1]
     assert "### CURRENT_PRD" in second_user_prompt
@@ -575,7 +668,11 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
     (company / "artifacts" / "architecture.json").write_text(json.dumps({"project_name": "test"}), encoding="utf-8")
     (company / "artifacts" / "architecture.md").write_text("# Arch", encoding="utf-8")
-    (company / "artifacts" / "roster.json").write_text(_CANNED_ROSTER.split("```json\n")[1].split("\n```")[0])
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN), encoding="utf-8"
+    )
+    (company / "artifacts" / "execution_plan.md").write_text("# Execution Plan", encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(_extract_json_block(_CANNED_ROSTER), encoding="utf-8")
     (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
     (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
 
@@ -585,6 +682,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
         "completed_phases": {
             "prd": {"timestamp": "2026-01-01T00:00:00Z"},
             "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
+            "execution_plan": {"timestamp": "2026-01-01T00:00:00Z"},
             "roster": {"timestamp": "2026-01-01T00:00:00Z"},
             "roles": {"timestamp": "2026-01-01T00:00:00Z"},
         },
@@ -629,7 +727,7 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
 
     assert result == 0
     # LLM was called because prd.md was missing, triggering all downstream phases.
-    assert mock_llm.invoke.call_count == 4  # All phases ran.
+    assert mock_llm.invoke.call_count == 5  # All phases ran.
     assert (company / "artifacts" / "prd.md").is_file()
 
 
@@ -646,7 +744,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=[GitError("commit failed"), "", "", ""],
+            side_effect=[GitError("commit failed"), "", "", "", ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -660,7 +758,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -680,7 +778,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=["", "", GitError("commit failed"), ""],
+            side_effect=["", "", "", GitError("commit failed"), ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -694,7 +792,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -710,7 +808,11 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
     (company / "artifacts" / "architecture.json").write_text(json.dumps({"project_name": "test"}), encoding="utf-8")
     (company / "artifacts" / "architecture.md").write_text("# Arch", encoding="utf-8")
-    (company / "artifacts" / "roster.json").write_text(_CANNED_ROSTER.split("```json\n")[1].split("\n```")[0])
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN), encoding="utf-8"
+    )
+    (company / "artifacts" / "execution_plan.md").write_text("# Execution Plan", encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(_extract_json_block(_CANNED_ROSTER), encoding="utf-8")
     (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
     state = {
         "version": "0.2",
@@ -718,6 +820,7 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
         "completed_phases": {
             "prd": {"timestamp": "2026-01-01T00:00:00Z"},
             "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
+            "execution_plan": {"timestamp": "2026-01-01T00:00:00Z"},
             "roster": {"timestamp": "2026-01-01T00:00:00Z"},
             "roles": {"timestamp": "2026-01-01T00:00:00Z"},
         },
@@ -749,6 +852,7 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
         "completed_phases": {
             "prd": {"timestamp": "2026-01-01T00:00:00Z"},
             "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
+            "execution_plan": {"timestamp": "2026-01-01T00:00:00Z"},
             "roster": {"timestamp": "2026-01-01T00:00:00Z"},
             "roles": {"timestamp": "2026-01-01T00:00:00Z"},
         },
@@ -764,8 +868,8 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(restart=True))
 
     assert result == 0
-    # All 4 LLM calls should have been made (no skipping).
-    assert mock_llm.invoke.call_count == 4
+    # All 5 LLM calls should have been made (no skipping).
+    assert mock_llm.invoke.call_count == 5
 
 
 def test_vision_changed_continue(tmp_path: Path) -> None:
@@ -789,7 +893,7 @@ def test_vision_changed_continue(tmp_path: Path) -> None:
 
     mock_llm = _make_mock_llm()
     # Provide only arch/roster/role responses since prd is skipped.
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE])
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
@@ -799,8 +903,8 @@ def test_vision_changed_continue(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    # PRD should have been skipped (user chose continue), remaining 3 phases ran.
-    assert mock_llm.invoke.call_count == 3
+    # PRD should have been skipped (user chose continue), remaining 4 phases ran.
+    assert mock_llm.invoke.call_count == 4
 
 
 def test_vision_changed_restart(tmp_path: Path) -> None:
@@ -830,5 +934,5 @@ def test_vision_changed_restart(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    # All 4 phases should have run (state was cleared).
-    assert mock_llm.invoke.call_count == 4
+    # All 5 phases should have run (state was cleared).
+    assert mock_llm.invoke.call_count == 5
