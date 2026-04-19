@@ -92,6 +92,36 @@ Examples:
 - If a generated role file was deleted after a previous run, the roles phase runs again.
 - If all reviewable artifacts and expected generated role files still exist, the rerun quickly skips everything.
 
+## When Template And Standards Edits Apply
+
+Resume decisions are artifact-based, not template-diff-based. If you edit
+files under `.company/templates/` or `.company/standards/`, `asw` does not
+automatically invalidate completed phases.
+
+In practice:
+
+- Editing `.company/templates/execution_plan_template.md` affects the VP
+  Engineering phase only the next time the execution plan is regenerated.
+- Editing `.company/templates/role_template.md` or the contents of an already
+  assigned standards file affects generated specialist role prompts only the
+  next time role generation runs.
+- Adding, removing, or renaming standards files affects the Hiring Manager
+  phase because roster generation sees the current list of available
+  standards filenames.
+
+To make those edits take effect, either use `--restart` for a clean rebuild
+or rerun the relevant downstream phase by removing its generated artifacts
+before starting again.
+
+Useful examples:
+
+- Remove `execution_plan.json` or `execution_plan.md` if you want the
+  execution-plan phase and all later phases to rerun.
+- Remove `roster.json` or `roster.md` if you changed the available standards
+  filenames and want the Hiring Manager to elaborate briefs again.
+- Remove one generated specialist role file listed in `roster.json` if you
+  only want role generation to run again with the current approved roster.
+
 ## Create Debug Logs
 
 Use `--debug` to capture detailed logs from the CLI, orchestrator, and backend.

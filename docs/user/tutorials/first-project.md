@@ -201,6 +201,23 @@ ls .company/standards
 sed -n '1,200p' .company/standards/python_guidelines.md
 ```
 
+`asw` also copies bundled templates into `.company/templates/`. In the current
+pipeline, the live ones are `execution_plan_template.md` for the VP
+Engineering phase and `role_template.md` for specialist role generation.
+
+Inspect them with:
+
+```bash
+ls .company/templates
+sed -n '1,220p' .company/templates/execution_plan_template.md
+sed -n '1,220p' .company/templates/role_template.md
+```
+
+If you edit templates or standards after a completed run, the next
+`asw start --vision vision.md` still skips completed phases while their
+downstream artifacts exist. Use `--restart` when you want those edits to
+regenerate later artifacts without manually removing files.
+
 ## 8 - Understand The Finished Workspace
 
 After a successful run, you should have a structure like this:

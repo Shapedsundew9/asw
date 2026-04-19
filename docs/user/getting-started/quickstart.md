@@ -178,6 +178,11 @@ By default those commits stage only `.company/`. If you explicitly want the phas
 
 Rerunning the same command resumes from saved state. If completed artifacts are still present, `asw` skips those phases, including generated roles when the expected role files from the approved roster still exist. If the vision file changed, `asw` asks whether to continue or restart from scratch.
 
+The same skip rule still applies if you edited `.company/templates/` or
+`.company/standards/` after the last run. Use `--restart` when you want
+template or standards changes to regenerate execution plans, role briefs, or
+role prompts without manually removing artifacts.
+
 Use `--restart` when you want to discard the existing `.company/` directory and rebuild it from scratch.
 
 ## Troubleshooting

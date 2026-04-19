@@ -111,7 +111,21 @@ Each agent is driven by a role file in `.company/roles/`. On the first run, `asw
 | Hiring Manager | `.company/roles/hiring_manager.md` | `.company/artifacts/roster.json` and `roster.md` |
 | Role Writer | `.company/roles/role_writer.md` | Generated role prompts in `.company/roles/` |
 
-Standards files live in `.company/standards/`. The Hiring Manager assigns standards while elaborating each approved role brief, and the Role Writer incorporates those standards into the generated prompt.
+Standards files live in `.company/standards/`. The Hiring Manager assigns
+standards while elaborating each approved role brief, and the Role Writer
+incorporates those standards into the generated prompt.
+
+On the first run, `asw` also copies bundled templates into `.company/templates/`.
+
+The current V0.2 pipeline actively reads:
+
+- `execution_plan_template.md`, which the VP Engineering uses as structural
+  guidance when generating `execution_plan.json`.
+- `role_template.md`, which the Role Writer uses as the outline for each
+  generated specialist role prompt.
+
+`prd_template.md` and `architecture_template.md` are bundled too, but the
+current pipeline does not read them directly during generation.
 
 ## Mechanical Linting And Retries
 
@@ -153,7 +167,8 @@ What each part does:
 - `roles/` contains bundled role files plus generated specialist roles.
 - `artifacts/` contains PRD, architecture, roster, and other generated documents.
 - `memory/` is reserved for workflow memory documents.
-- `templates/` contains reusable output templates.
+- `templates/` contains bundled templates, including the live
+  `execution_plan_template.md` and `role_template.md` inputs.
 - `standards/` contains organization-wide rules injected into role prompts.
 
 If you have an older `.company/state/` directory from earlier runs, `asw` migrates it to `.company/memory/` automatically.
@@ -182,6 +197,9 @@ Rerunning `asw start` usually resumes from saved state rather than starting over
 - PRD, architecture, execution plan, and roster are skipped only when their expected artifacts still exist.
 - Role generation is skipped only when the generated role files expected by the approved roster still exist.
 - If the vision file changed, `asw` asks whether to continue or restart.
+- Editing files in `.company/templates/` or `.company/standards/` does not,
+  by itself, force a rerun while the expected downstream artifacts still
+  exist.
 - `--restart` forces a clean rebuild of `.company/`.
 - `--debug` writes detailed logs to a file for troubleshooting. If you pass a custom log path, its parent directory must already exist.
 
