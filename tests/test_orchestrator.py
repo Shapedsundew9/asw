@@ -1,5 +1,7 @@
 """Integration test for the orchestrator pipeline."""
 
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from asw.company import hash_file, init_company, read_pipeline_state, write_pipeline_state
+from asw.company import init_company, new_pipeline_state, read_pipeline_state, snapshot_paths, write_pipeline_state
 from asw.gates import FounderReviewResult
 from asw.git import GitError
 from asw.llm.errors import LLMInvocationError, TransientLLMError
@@ -187,6 +189,45 @@ graph TD
 ```
 """
 
+_CANNED_EXECUTION_PLAN = """\
+```json
+{
+    "phases": [
+        {
+            "id": "phase_1",
+            "name": "Local Validation",
+            "objective": "Validate the core workflow locally before production hardening.",
+            "scope": "Use local-only infrastructure and defer hosted operations.",
+            "deliverables": ["Core flow works locally", "Acceptance checks exist"],
+            "exit_criteria": ["Founder can run the product locally", "Core checks pass"],
+            "selected_team_roles": ["Python Backend Developer"]
+        }
+    ],
+    "selected_team": [
+        {
+            "title": "Python Backend Developer",
+            "filename": "python_backend_developer.md",
+            "responsibility": "Implement CLI entry point and orchestrator logic.",
+            "rationale": "This role is immediately needed to build the first validated product slice."
+        }
+    ],
+    "generic_role_catalog": [
+        {
+            "title": "DevOps Engineer",
+            "summary": "Own deployment automation and runtime operations.",
+            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+        }
+    ],
+    "deferred_roles_or_capabilities": [
+        {
+            "name": "Production DevOps",
+            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
+        }
+    ]
+}
+```
+"""
+
 _CANNED_ROSTER = """\
 ```json
 {
@@ -195,6 +236,13 @@ _CANNED_ROSTER = """\
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
             "responsibility": "Implement CLI entry point and orchestrator logic.",
+            "mission": "Deliver the first validated backend workflow for Phase 1.",
+            "scope": "Own the CLI entry point, orchestration flow, and first persistence path for local validation.",
+            "key_deliverables": [
+                "Implement the first CLI workflow",
+                "Write backend and orchestration tests"
+            ],
+            "collaborators": ["Founder", "Documentation Standards Lead"],
             "assigned_standards": ["python_guidelines.md"]
         }
     ]
@@ -270,8 +318,7 @@ graph TD
 
 ## Open Questions
 
-1. Which database should we use?
-   - Choices: ["PostgreSQL", "SQLite"]
+- Founder questions will be captured in the CLI review flow and persisted here after review.
 
 ```json
 {
@@ -306,20 +353,44 @@ graph TD
 ```
 """
 
-_CANNED_ROSTER_WITH_QUESTIONS = """\
+_CANNED_EXECUTION_PLAN_WITH_QUESTIONS = """\
 ```json
 {
-    "hired_agents": [
+    "phases": [
+        {
+            "id": "phase_1",
+            "name": "Local Validation",
+            "objective": "Validate the core workflow locally before production hardening.",
+            "scope": "Use local-only infrastructure and defer hosted operations.",
+            "deliverables": ["Core flow works locally"],
+            "exit_criteria": ["Founder can run the product locally"],
+            "selected_team_roles": ["Python Backend Developer"]
+        }
+    ],
+    "selected_team": [
         {
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
             "responsibility": "Implement CLI entry point and orchestrator logic.",
-            "assigned_standards": ["python_guidelines.md"]
+            "rationale": "This role is immediately needed to build the first validated product slice."
+        }
+    ],
+    "generic_role_catalog": [
+        {
+            "title": "DevOps Engineer",
+            "summary": "Own deployment automation and runtime operations.",
+            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+        }
+    ],
+    "deferred_roles_or_capabilities": [
+        {
+            "name": "Production DevOps",
+            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
         }
     ],
     "founder_questions": [
         {
-            "question": "Should we hire frontend support now?",
+            "question": "Should Phase 1 remain local-only?",
             "choices": ["Yes", "No"]
         }
     ]
@@ -328,10 +399,17 @@ _CANNED_ROSTER_WITH_QUESTIONS = """\
 """
 
 
+def _extract_json_block(content: str) -> str:
+    """Extract the JSON body from a fenced JSON block."""
+    return content.split("```json\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+
+
 def _make_mock_llm() -> MagicMock:
     """Create a mock LLM backend that returns canned responses for all phases."""
     mock = MagicMock()
-    mock.invoke = MagicMock(side_effect=[_CANNED_PRD, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock.invoke = MagicMock(
+        side_effect=[_CANNED_PRD, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+    )
     return mock
 
 
@@ -375,12 +453,18 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert arch["project_name"] == "agenticorg"
 
     # Verify V0.2 hiring artifacts were written.
+    assert (company / "artifacts" / "execution_plan.json").is_file()
+    assert (company / "artifacts" / "execution_plan.md").is_file()
     assert (company / "artifacts" / "roster.json").is_file()
     assert (company / "artifacts" / "roster.md").is_file()
+
+    execution_plan = json.loads((company / "artifacts" / "execution_plan.json").read_text())
+    assert execution_plan["selected_team"][0]["title"] == "Python Backend Developer"
 
     roster = json.loads((company / "artifacts" / "roster.json").read_text())
     assert len(roster["hired_agents"]) == 1
     assert roster["hired_agents"][0]["title"] == "Python Backend Developer"
+    assert roster["hired_agents"][0]["mission"] == "Deliver the first validated backend workflow for Phase 1."
 
     # Verify generated role file was written.
     assert (company / "roles" / "python_backend_developer.md").is_file()
@@ -390,8 +474,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # Verify pipeline state was written.
     state = read_pipeline_state(tmp_path)
     assert state is not None
-    for phase in ("prd", "architecture", "roster", "roles"):
-        assert phase in state["completed_phases"]
+    for phase in ("prd", "architecture", "execution_plan", "roster", "roles"):
+        assert phase in state["phases"]
 
 
 def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path: Path) -> None:
@@ -401,7 +485,9 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
     _setup_git_repo(tmp_path)
 
     mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock_llm.invoke = MagicMock(
+        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+    )
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
@@ -421,7 +507,7 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     prd_content = (tmp_path / ".company" / "artifacts" / "prd.md").read_text(encoding="utf-8")
     assert "- Answer: PostgreSQL" in prd_content
@@ -429,7 +515,7 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
 
 
 def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> None:
-    """PRD, architecture, and roster answers should all avoid extra LLM calls."""
+    """PRD, architecture, and execution-plan answers should all avoid extra LLM calls."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
@@ -439,7 +525,8 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
         side_effect=[
             _CANNED_PRD_WITH_QUESTIONS,
             _CANNED_ARCH_WITH_QUESTIONS,
-            _CANNED_ROSTER_WITH_QUESTIONS,
+            _CANNED_EXECUTION_PLAN_WITH_QUESTIONS,
+            _CANNED_ROSTER,
             _CANNED_ROLE,
         ]
     )
@@ -461,7 +548,7 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
                 _APPROVE_REVIEW,
                 FounderReviewResult(
                     action="answer_questions",
-                    answers=[{"question": "Should we hire frontend support now?", "answer": "No"}],
+                    answers=[{"question": "Should Phase 1 remain local-only?", "answer": "Yes"}],
                 ),
                 _APPROVE_REVIEW,
             ],
@@ -470,13 +557,13 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     company = tmp_path / ".company" / "artifacts"
     assert '"answer": "Yes"' in (company / "architecture.json").read_text(encoding="utf-8")
     assert "Answer: Yes" in (company / "architecture.md").read_text(encoding="utf-8")
-    assert '"answer": "No"' in (company / "roster.json").read_text(encoding="utf-8")
-    assert "Answer: No" in (company / "roster.md").read_text(encoding="utf-8")
+    assert '"answer": "Yes"' in (company / "execution_plan.json").read_text(encoding="utf-8")
+    assert "Answer: Yes" in (company / "execution_plan.md").read_text(encoding="utf-8")
 
 
 def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_path: Path) -> None:
@@ -487,7 +574,14 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
 
     mock_llm = MagicMock()
     mock_llm.invoke = MagicMock(
-        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_PRD, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE]
+        side_effect=[
+            _CANNED_PRD_WITH_QUESTIONS,
+            _CANNED_PRD,
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+        ]
     )
 
     with (
@@ -512,12 +606,106 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 6
 
     second_user_prompt = mock_llm.invoke.call_args_list[1].args[1]
     assert "### CURRENT_PRD" in second_user_prompt
     assert "### FOUNDER_ANSWERS" in second_user_prompt
     assert "PostgreSQL" in second_user_prompt
+
+
+def test_architecture_request_more_questions_escalates_until_new_question(tmp_path: Path) -> None:
+    """Architecture follow-up requests should not silently return with no new question."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    arch_without_new_question = """\
+```json
+{
+    "project_name": "agenticorg",
+    "tech_stack": {"language": "Python", "version": "3.14", "frameworks": [], "tools": ["argparse"]},
+    "components": [{"name": "CLI", "responsibility": "Entry point", "interfaces": ["start"]}],
+    "data_models": [{"name": "Vision", "fields": [{"name": "content", "type": "str"}]}],
+    "api_contracts": [{"endpoint": "/start", "method": "CLI", "description": "Start pipeline"}],
+    "deployment": {"platform": "DevContainer", "strategy": "local", "requirements": ["Docker"]},
+    "founder_questions": [
+        {"question": "Should we deploy locally first?", "answer": "Yes"}
+    ]
+}
+```
+
+```mermaid
+graph TD
+    CLI --> Orchestrator
+```
+"""
+
+    arch_with_new_question = """\
+```json
+{
+    "project_name": "agenticorg",
+    "tech_stack": {"language": "Python", "version": "3.14", "frameworks": [], "tools": ["argparse"]},
+    "components": [{"name": "CLI", "responsibility": "Entry point", "interfaces": ["start"]}],
+    "data_models": [{"name": "Vision", "fields": [{"name": "content", "type": "str"}]}],
+    "api_contracts": [{"endpoint": "/start", "method": "CLI", "description": "Start pipeline"}],
+    "deployment": {"platform": "DevContainer", "strategy": "local", "requirements": ["Docker"]},
+    "founder_questions": [
+        {"question": "Should we deploy locally first?", "answer": "Yes"},
+        {"question": "Do we need authentication in Phase 1?", "choices": ["Yes", "No"]}
+    ]
+}
+```
+
+```mermaid
+graph TD
+    CLI --> Orchestrator
+```
+"""
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(
+        side_effect=[
+            _CANNED_PRD,
+            _CANNED_ARCH_WITH_QUESTIONS,
+            arch_without_new_question,
+            arch_with_new_question,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+        ]
+    )
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch(
+            "asw.orchestrator.founder_review",
+            side_effect=[
+                _APPROVE_REVIEW,
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Should we deploy locally first?", "answer": "Yes"}],
+                ),
+                FounderReviewResult(
+                    action="request_more_questions",
+                    feedback="Ask one more unresolved architecture question.",
+                ),
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Do we need authentication in Phase 1?", "answer": "No"}],
+                ),
+                _APPROVE_REVIEW,
+                _APPROVE_REVIEW,
+            ],
+        ),
+    ):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 7
+    architecture_json = (tmp_path / ".company" / "artifacts" / "architecture.json").read_text(encoding="utf-8")
+    assert '"question": "Do we need authentication in Phase 1?"' in architecture_json
+    assert '"answer": "No"' in architecture_json
 
 
 # ── Resume / restart tests ──────────────────────────────────────────────
@@ -538,30 +726,53 @@ def _setup_git_repo(tmp_path: Path) -> None:
     )
 
 
+def _build_state(
+    workdir: Path,
+    phase_specs: dict[str, tuple[list[Path], list[Path]]],
+    *,
+    completed_at: str = "2026-01-01T00:00:00Z",
+) -> dict:
+    """Build a pipeline state document from input/output path snapshots."""
+    state = new_pipeline_state()
+    for phase, (inputs, outputs) in phase_specs.items():
+        input_snapshot = snapshot_paths(workdir, inputs)
+        output_snapshot = snapshot_paths(workdir, outputs)
+        state["tracked_files"].update(input_snapshot)
+        state["tracked_files"].update(output_snapshot)
+        state["phases"][phase] = {
+            "completed_at": completed_at,
+            "inputs": input_snapshot,
+            "outputs": output_snapshot,
+        }
+    return state
+
+
 def test_is_phase_done_returns_false_when_no_state() -> None:
     """_is_phase_done returns False with no state."""
-    assert _is_phase_done(None, "prd", []) is False
+    assert _is_phase_done(None, "prd", [], workdir=Path(".")) is False
 
 
-def test_is_phase_done_returns_false_when_phase_missing() -> None:
-    """_is_phase_done returns False when phase not in completed_phases."""
-    state: dict = {"completed_phases": {}}
-    assert _is_phase_done(state, "prd", []) is False
+def test_is_phase_done_returns_false_when_phase_missing(tmp_path: Path) -> None:
+    """_is_phase_done returns False when phase is absent from state."""
+    state = new_pipeline_state()
+    assert _is_phase_done(state, "prd", [], workdir=tmp_path) is False
 
 
 def test_is_phase_done_returns_false_when_artifact_missing(tmp_path: Path) -> None:
     """_is_phase_done returns False when artifact file doesn't exist."""
-    state: dict = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
     missing = tmp_path / "nonexistent.md"
-    assert _is_phase_done(state, "prd", [missing]) is False
+    state = _build_state(tmp_path, {"prd": ([tmp_path / "vision.md"], [missing])})
+    assert _is_phase_done(state, "prd", [missing], workdir=tmp_path) is False
 
 
 def test_is_phase_done_returns_true(tmp_path: Path) -> None:
     """_is_phase_done returns True when phase completed and artifacts exist."""
-    state: dict = {"completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}}}
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n")
     artifact = tmp_path / "prd.md"
     artifact.write_text("content")
-    assert _is_phase_done(state, "prd", [artifact]) is True
+    state = _build_state(tmp_path, {"prd": ([vision], [artifact])})
+    assert _is_phase_done(state, "prd", [artifact], workdir=tmp_path) is True
 
 
 def test_resume_skips_completed_phases(tmp_path: Path) -> None:
@@ -575,20 +786,55 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
     (company / "artifacts" / "architecture.json").write_text(json.dumps({"project_name": "test"}), encoding="utf-8")
     (company / "artifacts" / "architecture.md").write_text("# Arch", encoding="utf-8")
-    (company / "artifacts" / "roster.json").write_text(_CANNED_ROSTER.split("```json\n")[1].split("\n```")[0])
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN), encoding="utf-8"
+    )
+    (company / "artifacts" / "execution_plan.md").write_text("# Execution Plan", encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(_extract_json_block(_CANNED_ROSTER), encoding="utf-8")
     (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
     (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
 
-    state = {
-        "version": "0.2",
-        "vision_sha256": hash_file(vision),
-        "completed_phases": {
-            "prd": {"timestamp": "2026-01-01T00:00:00Z"},
-            "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roster": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roles": {"timestamp": "2026-01-01T00:00:00Z"},
+    state = _build_state(
+        tmp_path,
+        {
+            "prd": ([vision, company / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"]),
+            "architecture": (
+                [vision, company / "artifacts" / "prd.md", company / "roles" / "cto.md"],
+                [company / "artifacts" / "architecture.json", company / "artifacts" / "architecture.md"],
+            ),
+            "execution_plan": (
+                [
+                    vision,
+                    company / "artifacts" / "prd.md",
+                    company / "artifacts" / "architecture.json",
+                    company / "roles" / "vpe.md",
+                    company / "templates" / "execution_plan_template.md",
+                ],
+                [company / "artifacts" / "execution_plan.json", company / "artifacts" / "execution_plan.md"],
+            ),
+            "roster": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    company / "roles" / "hiring_manager.md",
+                    company / "standards" / "python_guidelines.md",
+                    company / "standards" / "ui_guidelines.md",
+                ],
+                [company / "artifacts" / "roster.json", company / "artifacts" / "roster.md"],
+            ),
+            "roles": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    company / "artifacts" / "roster.json",
+                    company / "roles" / "role_writer.md",
+                    company / "templates" / "role_template.md",
+                    company / "standards" / "python_guidelines.md",
+                ],
+                [company / "roles" / "python_backend_developer.md"],
+            ),
         },
-    }
+    )
     write_pipeline_state(tmp_path, state)
 
     mock_llm = MagicMock()
@@ -612,11 +858,12 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
 
     company = init_company(tmp_path)
     # State says prd done, but NO prd.md on disk.
-    state = {
-        "version": "0.2",
-        "vision_sha256": hash_file(vision),
-        "completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}},
-    }
+    state = _build_state(
+        tmp_path,
+        {
+            "prd": ([vision, company / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"]),
+        },
+    )
     write_pipeline_state(tmp_path, state)
 
     mock_llm = _make_mock_llm()
@@ -629,7 +876,7 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
 
     assert result == 0
     # LLM was called because prd.md was missing, triggering all downstream phases.
-    assert mock_llm.invoke.call_count == 4  # All phases ran.
+    assert mock_llm.invoke.call_count == 5  # All phases ran.
     assert (company / "artifacts" / "prd.md").is_file()
 
 
@@ -646,7 +893,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=[GitError("commit failed"), "", "", ""],
+            side_effect=[GitError("commit failed"), "", "", "", ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -654,17 +901,17 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
 
         state = read_pipeline_state(tmp_path)
         assert state is not None
-        assert "prd" in state["completed_phases"]
-        assert "commit:prd-generation" not in state["completed_phases"]
+        assert "prd" in state["phases"]
+        assert "commit:prd-generation" not in state["phases"]
 
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
-    assert "commit:prd-generation" in state["completed_phases"]
+    assert "commit:prd-generation" in state["phases"]
 
 
 def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path) -> None:
@@ -680,7 +927,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=["", "", GitError("commit failed"), ""],
+            side_effect=["", "", "", GitError("commit failed"), ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -688,17 +935,17 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
 
         state = read_pipeline_state(tmp_path)
         assert state is not None
-        assert "roles" in state["completed_phases"]
-        assert "commit:hiring" not in state["completed_phases"]
+        assert "roles" in state["phases"]
+        assert "commit:hiring" not in state["phases"]
 
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
-    assert "commit:hiring" in state["completed_phases"]
+    assert "commit:hiring" in state["phases"]
 
 
 def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
@@ -710,18 +957,53 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
     (company / "artifacts" / "architecture.json").write_text(json.dumps({"project_name": "test"}), encoding="utf-8")
     (company / "artifacts" / "architecture.md").write_text("# Arch", encoding="utf-8")
-    (company / "artifacts" / "roster.json").write_text(_CANNED_ROSTER.split("```json\n")[1].split("\n```")[0])
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN), encoding="utf-8"
+    )
+    (company / "artifacts" / "execution_plan.md").write_text("# Execution Plan", encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(_extract_json_block(_CANNED_ROSTER), encoding="utf-8")
     (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
-    state = {
-        "version": "0.2",
-        "vision_sha256": hash_file(vision),
-        "completed_phases": {
-            "prd": {"timestamp": "2026-01-01T00:00:00Z"},
-            "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roster": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roles": {"timestamp": "2026-01-01T00:00:00Z"},
+    state = _build_state(
+        tmp_path,
+        {
+            "prd": ([vision, company / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"]),
+            "architecture": (
+                [vision, company / "artifacts" / "prd.md", company / "roles" / "cto.md"],
+                [company / "artifacts" / "architecture.json", company / "artifacts" / "architecture.md"],
+            ),
+            "execution_plan": (
+                [
+                    vision,
+                    company / "artifacts" / "prd.md",
+                    company / "artifacts" / "architecture.json",
+                    company / "roles" / "vpe.md",
+                    company / "templates" / "execution_plan_template.md",
+                ],
+                [company / "artifacts" / "execution_plan.json", company / "artifacts" / "execution_plan.md"],
+            ),
+            "roster": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    company / "roles" / "hiring_manager.md",
+                    company / "standards" / "python_guidelines.md",
+                    company / "standards" / "ui_guidelines.md",
+                ],
+                [company / "artifacts" / "roster.json", company / "artifacts" / "roster.md"],
+            ),
+            "roles": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    company / "artifacts" / "roster.json",
+                    company / "roles" / "role_writer.md",
+                    company / "templates" / "role_template.md",
+                    company / "standards" / "python_guidelines.md",
+                ],
+                [company / "roles" / "python_backend_developer.md"],
+            ),
         },
-    }
+    )
     write_pipeline_state(tmp_path, state)
 
     mock_llm = MagicMock()
@@ -742,17 +1024,48 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
     _setup_git_repo(tmp_path)
 
     # Pre-populate state as if all phases completed.
-    init_company(tmp_path)
-    state = {
-        "version": "0.2",
-        "vision_sha256": hash_file(vision),
-        "completed_phases": {
-            "prd": {"timestamp": "2026-01-01T00:00:00Z"},
-            "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roster": {"timestamp": "2026-01-01T00:00:00Z"},
-            "roles": {"timestamp": "2026-01-01T00:00:00Z"},
+    company = init_company(tmp_path)
+    state = _build_state(
+        tmp_path,
+        {
+            "prd": ([vision, tmp_path / ".company" / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"]),
+            "architecture": (
+                [vision, company / "artifacts" / "prd.md", tmp_path / ".company" / "roles" / "cto.md"],
+                [company / "artifacts" / "architecture.json", company / "artifacts" / "architecture.md"],
+            ),
+            "execution_plan": (
+                [
+                    vision,
+                    company / "artifacts" / "prd.md",
+                    company / "artifacts" / "architecture.json",
+                    tmp_path / ".company" / "roles" / "vpe.md",
+                    tmp_path / ".company" / "templates" / "execution_plan_template.md",
+                ],
+                [company / "artifacts" / "execution_plan.json", company / "artifacts" / "execution_plan.md"],
+            ),
+            "roster": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    tmp_path / ".company" / "roles" / "hiring_manager.md",
+                    tmp_path / ".company" / "standards" / "python_guidelines.md",
+                    tmp_path / ".company" / "standards" / "ui_guidelines.md",
+                ],
+                [company / "artifacts" / "roster.json", company / "artifacts" / "roster.md"],
+            ),
+            "roles": (
+                [
+                    company / "artifacts" / "architecture.json",
+                    company / "artifacts" / "execution_plan.json",
+                    company / "artifacts" / "roster.json",
+                    tmp_path / ".company" / "roles" / "role_writer.md",
+                    tmp_path / ".company" / "templates" / "role_template.md",
+                    tmp_path / ".company" / "standards" / "python_guidelines.md",
+                ],
+                [company / "roles" / "python_backend_developer.md"],
+            ),
         },
-    }
+    )
     write_pipeline_state(tmp_path, state)
 
     mock_llm = _make_mock_llm()
@@ -764,58 +1077,50 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(restart=True))
 
     assert result == 0
-    # All 4 LLM calls should have been made (no skipping).
-    assert mock_llm.invoke.call_count == 4
+    # All 5 LLM calls should have been made (no skipping).
+    assert mock_llm.invoke.call_count == 5
 
 
-def test_vision_changed_continue(tmp_path: Path) -> None:
-    """When vision changes and user chooses 'continue', pipeline resumes."""
+def test_tracked_input_change_continue(tmp_path: Path) -> None:
+    """Changed tracked inputs can be continued with explicitly."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision v1\n\nOriginal vision.\n")
     _setup_git_repo(tmp_path)
 
-    # Complete PRD with old vision hash.
     company = init_company(tmp_path)
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
-    state = {
-        "version": "0.2",
-        "vision_sha256": "old_hash_that_wont_match",
-        "completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}},
-    }
+    state = _build_state(
+        tmp_path, {"prd": ([vision, company / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"])}
+    )
     write_pipeline_state(tmp_path, state)
 
-    # Now change vision content (hash will differ from stored).
     vision.write_text("# Vision v2\n\nUpdated vision.\n")
 
     mock_llm = _make_mock_llm()
-    # Provide only arch/roster/role responses since prd is skipped.
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE])
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
-        patch("asw.orchestrator._prompt_vision_changed", return_value="continue"),
+        patch("builtins.input", return_value="c"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    # PRD should have been skipped (user chose continue), remaining 3 phases ran.
-    assert mock_llm.invoke.call_count == 3
+    assert mock_llm.invoke.call_count == 4
 
 
-def test_vision_changed_restart(tmp_path: Path) -> None:
-    """When vision changes and user chooses 'restart', pipeline runs from scratch."""
+def test_tracked_input_change_restart(tmp_path: Path) -> None:
+    """Changed tracked inputs can trigger a full restart from the prompt."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision v1\n\nOriginal vision.\n")
     _setup_git_repo(tmp_path)
 
     company = init_company(tmp_path)
     (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
-    state = {
-        "version": "0.2",
-        "vision_sha256": "old_hash_that_wont_match",
-        "completed_phases": {"prd": {"timestamp": "2026-01-01T00:00:00Z"}},
-    }
+    state = _build_state(
+        tmp_path, {"prd": ([vision, company / "roles" / "cpo.md"], [company / "artifacts" / "prd.md"])}
+    )
     write_pipeline_state(tmp_path, state)
 
     vision.write_text("# Vision v2\n\nUpdated vision.\n")
@@ -825,10 +1130,9 @@ def test_vision_changed_restart(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
-        patch("asw.orchestrator._prompt_vision_changed", return_value="restart"),
+        patch("builtins.input", return_value="s"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    # All 4 phases should have run (state was cleared).
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 5

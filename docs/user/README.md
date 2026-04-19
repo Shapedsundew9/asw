@@ -2,7 +2,7 @@
 
 Use these guides to install `asw`, run the V0.2 pipeline, and understand the artifacts and state it creates.
 
-`asw` orchestrates a simulated company of LLM-based agents that turns a vision document into a PRD, system architecture, proposed implementation roster, and generated role prompts.
+`asw` orchestrates a simulated company of LLM-based agents that turns a vision document into a PRD, system architecture, a founder-reviewed execution plan, approved-team role briefs, and generated role prompts.
 
 ## Getting Started
 
@@ -15,7 +15,7 @@ Use these guides to install `asw`, run the V0.2 pipeline, and understand the art
 
 | Document | Description |
 |----------|-------------|
-| [First Complete Run](tutorials/first-project.md) | Guided walkthrough of PRD, architecture, roster, and generated roles |
+| [First Complete Run](tutorials/first-project.md) | Guided walkthrough of PRD, architecture, execution planning, role briefs, and generated roles |
 
 ## Reference
 

@@ -5,7 +5,7 @@ This tutorial walks through a realistic V0.2 run so you can evaluate each artifa
 **What you will learn:**
 
 - How to write a vision document that produces useful downstream artifacts.
-- How to review the PRD, architecture, and roster gates.
+- How to review the PRD, architecture, and execution-plan gates.
 - How generated roles inherit responsibilities and standards.
 - How reruns, restarts, and debug logs fit into a real workflow.
 
@@ -105,6 +105,8 @@ Check these first:
 
 If the PRD contains structured founder questions, `asw` asks them before showing the review menu. Your answers are written into the PRD locally, which lets you inspect the resolved decisions before any rerun happens.
 
+While those questions are pending, the review panel hides the raw structured question payload and the duplicate pending-question prose, so the CLI remains the single place where you answer them.
+
 Choose the review action that matches the situation:
 
 | Situation | Best Choice |
@@ -145,34 +147,43 @@ Look for alignment between the vision, PRD, and technical choices:
 
 If the architecture raises deployment or stack questions, **Request More Questions** is often better than making the CTO guess.
 
-## 6 - Review And Adjust The Roster
+## 6 - Review The Execution Plan
 
-After architecture approval, the Hiring Manager proposes a roster in:
+After architecture approval, the VP Engineering proposes the phased delivery plan and initial team in:
+
+```bash
+cat .company/artifacts/execution_plan.json
+sed -n '1,220p' .company/artifacts/execution_plan.md
+```
+
+This is the phase where you control scope, headcount, and sequencing.
+
+Review the execution plan for:
+
+- A Phase 1 scope that is still too ambitious.
+- Roles that were hired too early instead of deferred.
+- Missing rationale for why a role is needed now.
+- Deferred capabilities that should actually move forward sooner.
+
+You have two useful modify strategies:
+
+- Write natural-language feedback if you want the VP Engineering to rethink the phased plan or the selected team.
+- Paste an edited JSON object if you already know the exact team and sequencing you want. `asw` validates that JSON before accepting it.
+
+For example, if the proposed plan adds dedicated DevOps work too early, you might defer that capability and keep the first phase focused on local validation.
+
+## 7 - Inspect The Role Briefs And Generated Roles
+
+After execution-plan approval, the Hiring Manager automatically elaborates the approved team into structured role briefs:
 
 ```bash
 cat .company/artifacts/roster.json
 sed -n '1,220p' .company/artifacts/roster.md
 ```
 
-This is the phase where you control scope, headcount, and specialization.
+At this point, the team is already decided. The Hiring Manager is refining mission, scope, deliverables, collaborators, and standards for each approved role.
 
-Review the roster for:
-
-- Missing roles for major architecture areas.
-- Overlapping responsibilities that should be merged.
-- Incorrect standards assignments.
-- Filenames that will be awkward to maintain later.
-
-You have two useful modify strategies:
-
-- Write natural-language feedback if you want the Hiring Manager to rethink the roster.
-- Paste an edited JSON object if you already know the exact roles you want. `asw` validates that JSON before accepting it.
-
-For example, if the proposed roster adds a dedicated frontend role too early, you might replace it with a single full-stack role and keep only `python_guidelines.md` assigned.
-
-## 7 - Inspect The Generated Roles
-
-After roster approval, `asw` generates one role prompt per approved entry. Inspect the results:
+After that, `asw` generates one role prompt per approved entry. Inspect the results:
 
 ```bash
 ls .company/roles
@@ -192,6 +203,20 @@ ls .company/standards
 sed -n '1,200p' .company/standards/python_guidelines.md
 ```
 
+`asw` also copies bundled templates into `.company/templates/`. In the current
+pipeline, the live ones are `execution_plan_template.md` for the VP
+Engineering phase and `role_template.md` for specialist role generation.
+
+Inspect them with:
+
+```bash
+ls .company/templates
+sed -n '1,220p' .company/templates/execution_plan_template.md
+sed -n '1,220p' .company/templates/role_template.md
+```
+
+If you edit templates, standards, bundled role files, or the vision after a completed run, the next `asw start --vision vision.md` compares those tracked files against the saved phase snapshots in `.company/pipeline_state.json` and prompts at the earliest affected phase.
+
 ## 8 - Understand The Finished Workspace
 
 After a successful run, you should have a structure like this:
@@ -204,6 +229,7 @@ link-vault/
     roles/
       cpo.md
       cto.md
+      vpe.md
       hiring_manager.md
       role_writer.md
       python_backend_developer.md
@@ -211,6 +237,8 @@ link-vault/
       prd.md
       architecture.json
       architecture.md
+      execution_plan.json
+      execution_plan.md
       roster.json
       roster.md
     memory/
@@ -218,7 +246,7 @@ link-vault/
     standards/
 ```
 
-If commits are enabled, your git log will usually contain three `asw` commits:
+If commits are enabled, your git log will usually contain four `asw` commits:
 
 ```bash
 git log --oneline
@@ -226,6 +254,7 @@ git log --oneline
 
 ```text
 a1b2c3d [asw] Phase: hiring completed
+4d5e6f7 [asw] Phase: execution-plan-generation completed
 7e8f9a0 [asw] Phase: architecture-generation completed
 1234567 [asw] Phase: prd-generation completed
 ```
@@ -240,8 +269,8 @@ asw start --vision vision.md
 
 Useful expectations:
 
-- If the saved artifacts are still present, completed phases are skipped.
-- If you changed the vision file, `asw` asks whether to continue or restart.
+- If the saved input and output hashes still match, completed phases are skipped.
+- If tracked inputs changed but the saved outputs still exist, `asw` asks whether to continue, rerun from that phase, or restart.
 - If you want a guaranteed clean slate, use `--restart`.
 
 Examples:
@@ -263,6 +292,7 @@ sequenceDiagram
     participant asw
     participant CPO
     participant CTO
+    participant VPE as VP Engineering
     participant HiringManager as Hiring Manager
     participant RoleWriter as Role Writer
     participant Git
@@ -280,11 +310,15 @@ sequenceDiagram
     asw->>Founder: Architecture review
     Founder-->>asw: Approve
     asw->>Git: commit architecture-generation
-    asw->>HiringManager: architecture + available standards
-    HiringManager-->>asw: roster JSON
-    asw->>asw: Lint roster
-    asw->>Founder: Roster review
+    asw->>VPE: vision + PRD + architecture
+    VPE-->>asw: execution plan JSON
+    asw->>asw: Lint execution plan
+    asw->>Founder: Execution plan review
     Founder-->>asw: Approve
+    asw->>Git: commit execution-plan-generation
+    asw->>HiringManager: architecture + execution plan + available standards
+    HiringManager-->>asw: roster JSON role briefs
+    asw->>asw: Lint roster
     asw->>RoleWriter: one call per approved role
     RoleWriter-->>asw: generated role prompt(s)
     asw->>Git: commit hiring

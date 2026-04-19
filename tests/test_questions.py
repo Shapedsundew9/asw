@@ -8,6 +8,7 @@ from asw.founder_questions import (
     _apply_founder_answers_to_prd,
     _extract_answered_founder_questions,
     _extract_founder_questions,
+    _render_founder_review_content,
 )
 
 
@@ -96,10 +97,7 @@ Example.
 
 ## Open Questions
 
-1. Tree species?
-   - Choices: ["Oak", "Birch"]
-2. Wind animation?
-   - Choices: ["Static", "Subtle"]
+- Founder questions will be captured in the CLI review flow and persisted here after review.
 
 ```json
 {
@@ -124,3 +122,51 @@ Example.
     assert '"answer": "Oak"' in updated
     assert '"answer": "Subtle"' in updated
     assert _extract_founder_questions(updated) is None
+
+
+def test_render_founder_review_content_hides_pending_question_sections() -> None:
+    """Founder review rendering should hide pending question prose and structured JSON."""
+    content = """## Open Questions
+
+1. Tree species?
+     - Choices: ["Oak", "Birch"]
+
+```json
+{
+    "founder_questions": [
+        {"question": "Tree species?", "choices": ["Oak", "Birch"]}
+    ]
+}
+```
+"""
+
+    rendered = _render_founder_review_content(
+        content,
+        questions=[{"question": "Tree species?", "choices": ["Oak", "Birch"]}],
+    )
+
+    assert "Tree species?" not in rendered
+    assert "```json" not in rendered
+
+
+def test_render_founder_review_content_keeps_answered_markdown() -> None:
+    """Answered founder input should remain visible after the question round is done."""
+    content = """## Open Questions
+
+1. Tree species?
+     - Answer: Oak
+
+```json
+{
+    "founder_questions": [
+        {"question": "Tree species?", "answer": "Oak"}
+    ]
+}
+```
+"""
+
+    rendered = _render_founder_review_content(content, questions=None)
+
+    assert "Tree species?" in rendered
+    assert "Answer: Oak" in rendered
+    assert "```json" not in rendered

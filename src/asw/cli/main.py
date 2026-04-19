@@ -91,12 +91,11 @@ def _resolve_log_path(debug: bool | str) -> Path:
         raise LoggingConfigError(msg)
 
     parent = log_path.parent
-    if not parent.is_dir():
-        msg = (
-            f"debug log directory does not exist: {parent}\n"
-            "  Create the directory first, or use a file path inside an existing directory."
-        )
-        raise LoggingConfigError(msg)
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        msg = f"could not create debug log directory: {parent}\n  {exc}"
+        raise LoggingConfigError(msg) from exc
 
     if not os.access(parent, os.W_OK):
         msg = f"debug log directory is not writable: {parent}"

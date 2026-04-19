@@ -13,6 +13,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from asw.founder_questions import _render_founder_review_content
+
 logger = logging.getLogger("asw.gates")
 
 _console = Console()
@@ -106,7 +108,12 @@ def _prompt_founder_action(phase_name: str) -> FounderReviewResult:
     logger.debug("Founder review for %s: choice=%s", phase_name, choice)
 
     if choice == "modify":
-        feedback = _prompt_text_feedback("Enter your feedback (press ESC then ENTER to submit):")
+        prompt = "Enter your feedback (press ESC then ENTER to submit):"
+        if phase_name == "Execution Plan":
+            prompt = (
+                "Enter your feedback or paste a full execution-plan JSON object " + "(press ESC then ENTER to submit):"
+            )
+        feedback = _prompt_text_feedback(prompt)
         if feedback is None:
             _stop_pipeline()
         _console.print("[dim]──── Feedback captured ────[/dim]")
@@ -150,7 +157,7 @@ def founder_review(
         Structured result describing the Founder's next action.
     """
     content = artifact_path.read_text(encoding="utf-8")
-    md = Markdown(content)
+    md = Markdown(_render_founder_review_content(content, questions))
 
     _console.print(
         Panel(

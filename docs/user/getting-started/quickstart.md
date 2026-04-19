@@ -91,6 +91,8 @@ The CLI prints progress like this:
 
 The CPO may include structured founder questions in the PRD. When that happens, `asw` asks those questions first, writes your answers back into the artifact locally, and then returns you to the review flow.
 
+While those questions are pending, the review panel hides the raw structured question payload so you do not read the same question list twice.
+
 Once the artifact is ready for review, you can choose from these actions:
 
 | Choice | What Happens |
@@ -112,18 +114,26 @@ After the PRD is approved, the CTO generates:
 
 Review the technical choices, component breakdown, data models, API contracts, and Mermaid diagram before approving.
 
-## Step 6 - Review The Roster
+## Step 6 - Review The Execution Plan
 
-After the architecture is approved, the Hiring Manager proposes the specialist roles needed to implement it.
+After the architecture is approved, the VP Engineering produces:
 
-You can handle the roster in two ways:
+- `.company/artifacts/execution_plan.json`
+- `.company/artifacts/execution_plan.md`
 
-- Use **Modify** with plain-language feedback if you want the Hiring Manager to revise the proposal.
-- Paste an edited JSON object if you want to directly control the role list, filenames, responsibilities, or assigned standards.
+This is the phase where you approve the first-phase team and the overall build-up strategy.
 
-## Step 7 - Let Role Generation Finish
+Useful review questions:
 
-Once you approve the roster, the Role Writer generates one Markdown role prompt for each approved entry. This phase runs automatically with no extra Founder Review Gate.
+- Does Phase 1 stay intentionally narrow enough to validate the product quickly?
+- Are any roles being hired too early?
+- Are the deferred capabilities clearly justified?
+
+If you want direct control, you can paste an edited execution-plan JSON object during **Modify** and `asw` validates it locally.
+
+## Step 7 - Let Hiring And Role Generation Finish
+
+Once you approve the execution plan, the Hiring Manager automatically expands the approved team into detailed role briefs, and the Role Writer then generates one Markdown role prompt for each approved entry. These phases run automatically with no extra Founder Review Gate.
 
 ## What Gets Created
 
@@ -137,6 +147,7 @@ my-first-project/
     roles/
       cpo.md
       cto.md
+      vpe.md
       hiring_manager.md
       role_writer.md
       python_backend_developer.md
@@ -145,6 +156,8 @@ my-first-project/
       prd.md
       architecture.json
       architecture.md
+      execution_plan.json
+      execution_plan.md
       roster.json
       roster.md
     memory/
@@ -152,11 +165,12 @@ my-first-project/
     standards/
 ```
 
-If you did not use `--no-commit`, your git history will usually contain three automatic commits:
+If you did not use `--no-commit`, your git history will usually contain four automatic commits:
 
 ```text
 [asw] Phase: prd-generation completed
 [asw] Phase: architecture-generation completed
+[asw] Phase: execution-plan-generation completed
 [asw] Phase: hiring completed
 ```
 
@@ -164,7 +178,9 @@ By default those commits stage only `.company/`. If you explicitly want the phas
 
 ## If You Run It Again
 
-Rerunning the same command resumes from saved state. If completed artifacts are still present, `asw` skips those phases, including generated roles when the expected role files from the approved roster still exist. If the vision file changed, `asw` asks whether to continue or restart from scratch.
+Rerunning the same command resumes from saved state. `asw` compares the current hashes of tracked inputs and outputs against the saved snapshots in `.company/pipeline_state.json`.
+
+If a completed phase is still current, `asw` skips it. If a completed phase's outputs are missing or changed, `asw` reruns it. If its tracked inputs changed but the outputs still exist, `asw` lets you continue with the saved artifacts, rerun from that phase, or restart from scratch.
 
 Use `--restart` when you want to discard the existing `.company/` directory and rebuild it from scratch.
 

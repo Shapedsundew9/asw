@@ -1,5 +1,7 @@
 """Pipeline orchestrator – the main SDLC loop."""
 
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import json
@@ -7,27 +9,32 @@ import logging
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from asw.agents.base import Agent
 from asw.company import (
     clear_company,
-    hash_file,
     init_company,
     mark_phase_complete,
+    new_pipeline_state,
     read_pipeline_state,
+    snapshot_paths,
     write_failed_artifact,
     write_pipeline_state,
 )
+from asw.execution_plan import _lint_execution_plan, _write_execution_plan
 from asw.founder_questions import (
     _apply_founder_answers_to_content,
     _apply_founder_answers_to_prd,
     _extract_answered_founder_questions,
+    _extract_founder_question_items,
     _extract_founder_questions,
     _render_founder_question_section,
 )
 from asw.gates import FounderReviewResult, founder_review
 from asw.git import GitError, commit_state, is_git_repo
+from asw.hiring import _expected_role_paths, _lint_roster, _write_roster
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
@@ -36,11 +43,145 @@ from asw.pipeline import PipelineExecutionContext, PipelineRunOptions, string_ch
 
 _MAX_RETRIES = 2
 _REQUEST_MORE_QUESTIONS_FEEDBACK = (
-    "Review the current artifact, preserve all founder decisions already captured, and ask additional "
-    "founder questions only if critical unresolved issues remain."
+    "Review the current artifact, preserve all founder decisions already captured, and ask at least one new "
+    "founder question whenever meaningful unresolved issues remain."
+)
+_REQUEST_MORE_QUESTIONS_ESCALATION = (
+    "The founder explicitly requested another question round. Return at least one new unresolved founder "
+    "question that is not already answered when any meaningful ambiguity remains."
 )
 
 logger = logging.getLogger("asw.orchestrator")
+
+
+class PipelineRestartRequested(RuntimeError):
+    """Raised when the founder chooses to restart from scratch mid-run."""
+
+
+@dataclass(frozen=True)
+class PhaseStatus:  # pylint: disable=too-many-instance-attributes
+    """Snapshot of a phase's recorded and current tracked files."""
+
+    phase: str
+    completed_at: str | None
+    recorded_inputs: dict[str, str | None]
+    recorded_outputs: dict[str, str | None]
+    current_inputs: dict[str, str | None]
+    current_outputs: dict[str, str | None]
+    changed_inputs: list[str]
+    changed_outputs: list[str]
+    missing_outputs: list[str]
+
+    @property
+    def has_record(self) -> bool:
+        """Return whether the phase has a stored completion record."""
+        return self.completed_at is not None
+
+    @property
+    def is_current(self) -> bool:
+        """Return whether the stored phase snapshot still matches the worktree."""
+        return self.has_record and not self.changed_inputs and not self.changed_outputs and not self.missing_outputs
+
+
+def _format_paths(paths: list[str]) -> str:
+    """Format tracked file paths for terminal output."""
+    return ", ".join(paths) if paths else "(none)"
+
+
+def _phase_record(state: dict | None, phase: str) -> dict:
+    """Return the stored phase record for *phase*, or an empty dict."""
+    if state is None:
+        return {}
+    phases = state.get("phases", {})
+    if not isinstance(phases, dict):
+        return {}
+    record = phases.get(phase, {})
+    return record if isinstance(record, dict) else {}
+
+
+def _evaluate_phase_status(
+    exec_ctx: PipelineExecutionContext,
+    phase: str,
+    *,
+    input_paths: list[Path],
+    output_paths: list[Path],
+) -> PhaseStatus:
+    """Return the current status of *phase* against the tracked file hashes."""
+    record = _phase_record(exec_ctx.state, phase)
+    completed_at = record.get("completed_at") if isinstance(record.get("completed_at"), str) else None
+    recorded_inputs = record.get("inputs", {}) if isinstance(record.get("inputs"), dict) else {}
+    recorded_outputs = record.get("outputs", {}) if isinstance(record.get("outputs"), dict) else {}
+
+    current_inputs = snapshot_paths(exec_ctx.workdir, input_paths)
+    current_outputs = snapshot_paths(exec_ctx.workdir, output_paths)
+
+    if completed_at is None:
+        return PhaseStatus(
+            phase=phase,
+            completed_at=None,
+            recorded_inputs={},
+            recorded_outputs={},
+            current_inputs=current_inputs,
+            current_outputs=current_outputs,
+            changed_inputs=[],
+            changed_outputs=[],
+            missing_outputs=[],
+        )
+
+    input_keys = set(recorded_inputs) | set(current_inputs)
+    output_keys = set(recorded_outputs) | set(current_outputs)
+    changed_inputs = sorted(path for path in input_keys if recorded_inputs.get(path) != current_inputs.get(path))
+    changed_outputs = sorted(path for path in output_keys if recorded_outputs.get(path) != current_outputs.get(path))
+    missing_outputs = sorted(path for path, digest in current_outputs.items() if digest is None)
+
+    return PhaseStatus(
+        phase=phase,
+        completed_at=completed_at,
+        recorded_inputs=recorded_inputs,
+        recorded_outputs=recorded_outputs,
+        current_inputs=current_inputs,
+        current_outputs=current_outputs,
+        changed_inputs=changed_inputs,
+        changed_outputs=changed_outputs,
+        missing_outputs=missing_outputs,
+    )
+
+
+def _print_skip_message(label: str, status: PhaseStatus) -> None:
+    """Print an informative skip message for a completed phase."""
+    print(f"\n↩ Skipping {label} phase (completed {status.completed_at})")
+    if status.recorded_inputs:
+        print(f"   Tracked inputs: {_format_paths(sorted(status.recorded_inputs))}")
+    if status.recorded_outputs:
+        print(f"   Verified outputs: {_format_paths(sorted(status.recorded_outputs))}")
+
+
+def _print_rerun_reason(label: str, status: PhaseStatus) -> None:
+    """Print why a completed phase can no longer be skipped."""
+    print(f"\n↻ Rerunning {label} phase because the saved snapshot is no longer current.")
+    if status.changed_inputs:
+        print(f"   Changed inputs: {_format_paths(status.changed_inputs)}")
+    if status.missing_outputs:
+        print(f"   Missing outputs: {_format_paths(status.missing_outputs)}")
+    elif status.changed_outputs:
+        print(f"   Changed outputs: {_format_paths(status.changed_outputs)}")
+
+
+def _prompt_phase_invalidation(label: str, status: PhaseStatus) -> str:
+    """Ask whether to continue, rerun, or restart after tracked changes."""
+    print(f"\n⚠  {label} phase inputs changed since the last completed snapshot.")
+    print(f"   Changed inputs: {_format_paths(status.changed_inputs)}")
+    print("   The saved artifacts may now be stale.")
+    while True:
+        choice = input("   [C]ontinue with saved artifacts, [R]erun this phase, or re[S]tart from scratch? ")
+        choice = choice.strip().lower()
+        if choice in ("c", "continue"):
+            return "continue"
+        if choice in ("r", "rerun"):
+            return "rerun"
+        if choice in ("s", "restart"):
+            return "restart"
+        print("   Please enter 'C', 'R', or 'S'.")
 
 
 def _commit_phase_name(phase_name: str) -> str:
@@ -50,16 +191,32 @@ def _commit_phase_name(phase_name: str) -> str:
 
 def _clear_phase_marker(workdir: Path, state: dict, phase: str) -> None:
     """Remove a completion marker from pipeline state when it is no longer valid."""
-    completed = state.get("completed_phases", {})
-    if phase in completed:
-        del completed[phase]
+    phases = state.get("phases", {})
+    if phase in phases:
+        del phases[phase]
+        write_pipeline_state(workdir, state)
+
+
+def _clear_phase_markers(workdir: Path, state: dict, phases: list[str]) -> None:
+    """Remove multiple completion markers from pipeline state."""
+    stored_phases = state.get("phases", {})
+    if not isinstance(stored_phases, dict):
+        return
+
+    changed = False
+    for phase in phases:
+        if phase in stored_phases:
+            del stored_phases[phase]
+            changed = True
+
+    if changed:
         write_pipeline_state(workdir, state)
 
 
 def _ensure_commit_complete(exec_ctx: PipelineExecutionContext, phase_name: str) -> int | None:
     """Run a commit phase once and record its completion separately from generation."""
     commit_phase = _commit_phase_name(phase_name)
-    if _is_phase_done(exec_ctx.state, commit_phase, []):
+    if _is_phase_done(exec_ctx.state, commit_phase, [], workdir=exec_ctx.workdir):
         return None
 
     err = _try_commit(
@@ -69,7 +226,7 @@ def _ensure_commit_complete(exec_ctx: PipelineExecutionContext, phase_name: str)
         stage_all=exec_ctx.options.stage_all,
     )
     if err is None:
-        mark_phase_complete(exec_ctx.workdir, exec_ctx.state, commit_phase)
+        mark_phase_complete(exec_ctx.workdir, exec_ctx.state, commit_phase, input_paths=[], output_paths=[])
     return err
 
 
@@ -239,6 +396,18 @@ def _review_feedback(review: FounderReviewResult) -> str | None:
     return review.feedback
 
 
+def _has_new_unanswered_questions(previous_items: list[dict], updated_content: str) -> bool:
+    """Return whether *updated_content* contains a new unresolved founder question."""
+    previous_questions = {
+        item["question"] for item in previous_items if isinstance(item, dict) and isinstance(item.get("question"), str)
+    }
+    current_questions = _extract_founder_questions(updated_content) or []
+    return any(
+        isinstance(item.get("question"), str) and item["question"] not in previous_questions
+        for item in current_questions
+    )
+
+
 def _extract_mermaid_block(content: str) -> str | None:
     """Extract the first fenced Mermaid code block from *content*."""
     match = re.search(r"```mermaid\s*\n(.*?)```", content, re.DOTALL)
@@ -363,116 +532,6 @@ def _write_architecture(raw_arch: str, company: Path) -> None:
     print(f"✓ Architecture diagram written: {arch_md_path}")
 
 
-# ── Roster (Phase C1) helpers ────────────────────────────────────────────
-
-_ROSTER_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
-_ROSTER_REQUIRED_KEYS = {"title", "filename", "responsibility", "assigned_standards"}
-
-
-def _lint_roster_entry(entry: dict, prefix: str, available: set[str] | None, errors: list[str]) -> None:
-    """Validate a single roster entry and append any errors found."""
-    if not isinstance(entry["title"], str) or not entry["title"]:
-        errors.append(f"{prefix}.title: must be a non-empty string.")
-    if not isinstance(entry["filename"], str) or not _ROSTER_FILENAME_RE.match(entry["filename"]):
-        errors.append(f"{prefix}.filename: must match lowercase_underscore.md " f"(got '{entry.get('filename', '')}')")
-    if not isinstance(entry["responsibility"], str) or not entry["responsibility"]:
-        errors.append(f"{prefix}.responsibility: must be a non-empty string.")
-    if not isinstance(entry["assigned_standards"], list):
-        errors.append(f"{prefix}.assigned_standards: must be an array.")
-    elif available is not None:
-        for std in entry["assigned_standards"]:
-            if std not in available:
-                errors.append(f"{prefix}.assigned_standards: '{std}' not found in standards directory.")
-
-
-def _lint_roster(content: str, *, standards_dir: Path | None = None) -> list[str]:
-    """Validate Hiring Manager roster output.
-
-    Parameters
-    ----------
-    content:
-        Raw LLM output containing a fenced JSON block.
-    standards_dir:
-        Path to ``.company/standards/`` for validating ``assigned_standards``
-        entries.  When *None*, standards references are not checked.
-    """
-    errors: list[str] = []
-
-    json_block = _extract_json_block(content)
-    if json_block is None:
-        errors.append("No fenced ```json``` code block found in Hiring Manager output.")
-        return errors
-
-    try:
-        data = json.loads(json_block)
-    except json.JSONDecodeError as exc:
-        errors.append(f"JSON parse error: {exc}")
-        return errors
-
-    if not isinstance(data, dict) or "hired_agents" not in data:
-        errors.append("JSON must be an object with a 'hired_agents' key.")
-        return errors
-
-    agents = data["hired_agents"]
-    if not isinstance(agents, list) or len(agents) == 0:
-        errors.append("'hired_agents' must be a non-empty array.")
-        return errors
-
-    available: set[str] | None = None
-    if standards_dir is not None and standards_dir.is_dir():
-        available = {f.name for f in standards_dir.iterdir() if f.is_file()}
-
-    for idx, entry in enumerate(agents):
-        prefix = f"hired_agents[{idx}]"
-        if not isinstance(entry, dict):
-            errors.append(f"{prefix}: must be an object.")
-            continue
-        missing = _ROSTER_REQUIRED_KEYS - set(entry.keys())
-        if missing:
-            errors.append(f"{prefix}: missing keys: {', '.join(sorted(missing))}")
-            continue
-
-        _lint_roster_entry(entry, prefix, available, errors)
-
-    logger.debug("Roster lint result: %d error(s)", len(errors))
-    for err in errors:
-        logger.debug("  Roster lint error: %s", err)
-    return errors
-
-
-def _render_roster_markdown(json_str: str) -> str:
-    """Render a human-readable Markdown table from roster JSON."""
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        return "# Proposed Roster\n\n> **Warning:** Roster JSON could not be parsed.\n"
-
-    agents = data.get("hired_agents", [])
-    lines = [
-        "# Proposed Roster",
-        "",
-        "> **Source of Truth:** The roster specification is stored in `roster.json`.",
-        "",
-        "| # | Title | Filename | Responsibility | Standards |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for idx, agent in enumerate(agents, 1):
-        stds = _safe_join(agent.get("assigned_standards", [])) or "None"
-        lines.append(
-            f"| {idx} | {agent.get('title', 'N/A')} "
-            f"| {agent.get('filename', 'N/A')} "
-            f"| {agent.get('responsibility', 'N/A')} "
-            f"| {stds} |"
-        )
-    lines.append("")
-    lines.append(f"**Total: {len(agents)} role(s) proposed**")
-    founder_questions = data.get("founder_questions", [])
-    if isinstance(founder_questions, list) and founder_questions:
-        lines.append("")
-        lines.extend(_render_founder_question_section(founder_questions, heading="## Founder Input"))
-    return "\n".join(lines)
-
-
 # ── Role generation (Phase C2) helpers ───────────────────────────────────
 
 _ROLE_REQUIRED_SECTIONS = ["Output Format", "Strict Rules"]
@@ -497,6 +556,70 @@ def _lint_role(content: str) -> list[str]:
     for err in errors:
         logger.debug("  Role lint error: %s", err)
     return errors
+
+
+def _build_execution_plan_context(
+    company: Path,
+    vision_content: str,
+    prd_content: str,
+    architecture_json: str,
+) -> dict[str, str]:
+    """Build the base context for the execution-plan phase."""
+    context = {
+        "vision": vision_content,
+        "prd": prd_content,
+        "architecture": architecture_json,
+    }
+    template_path = company / "templates" / "execution_plan_template.md"
+    if template_path.is_file():
+        context["execution_plan_template"] = template_path.read_text(encoding="utf-8")
+    return context
+
+
+def _persist_execution_plan_artifact(raw_plan: str, company: Path) -> str:
+    """Extract and persist execution-plan JSON, returning the JSON payload."""
+    _, json_block = _lint_execution_plan(raw_plan)
+    assert json_block is not None  # noqa: S101
+    _write_execution_plan(json_block, company)
+    return json_block
+
+
+def _load_assigned_standards_content(standards_dir: Path, assigned_standards: list[str]) -> str:
+    """Return the concatenated standards content for a role entry."""
+    std_parts: list[str] = []
+    for std_name in assigned_standards:
+        std_path = standards_dir / std_name
+        if std_path.is_file():
+            std_parts.append(std_path.read_text(encoding="utf-8"))
+    return "\n\n---\n\n".join(std_parts) if std_parts else "(no standards assigned)"
+
+
+def _available_standard_paths(company: Path) -> list[Path]:
+    """Return the current standards file paths in deterministic order."""
+    standards_dir = company / "standards"
+    if not standards_dir.is_dir():
+        return []
+    return sorted((path for path in standards_dir.iterdir() if path.is_file()), key=lambda path: path.name)
+
+
+def _assigned_standard_paths(company: Path, roster_json: str) -> list[Path]:
+    """Return the standards files referenced by the current approved roster."""
+    standards_dir = company / "standards"
+    try:
+        roster = json.loads(roster_json)
+    except json.JSONDecodeError:
+        return []
+
+    paths: list[Path] = []
+    for entry in roster.get("hired_agents", []):
+        if not isinstance(entry, dict):
+            continue
+        for filename in entry.get("assigned_standards", []):
+            if isinstance(filename, str) and filename:
+                paths.append(standards_dir / filename)
+
+    unique_paths = {path.resolve(): path for path in paths}
+    return sorted(unique_paths.values(), key=lambda path: path.name)
 
 
 def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
@@ -569,6 +692,8 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
         if review.action in {"modify", "request_more_questions"}:
             rerun_context = _build_revision_context(arch_context, "current_architecture", raw_arch)
 
+        previous_questions = _extract_founder_question_items(raw_arch)
+
         raw_arch = _agent_loop(
             cto,
             rerun_context,
@@ -576,6 +701,26 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
             "Architecture",
             founder_feedback=_review_feedback(review),
         )
+
+        if review.action == "request_more_questions" and not _has_new_unanswered_questions(
+            previous_questions, raw_arch
+        ):
+            raw_arch = _agent_loop(
+                cto,
+                rerun_context,
+                lambda c: _lint_architecture(c)[0],
+                "Architecture",
+                founder_feedback=(
+                    (_review_feedback(review) or _REQUEST_MORE_QUESTIONS_FEEDBACK)
+                    + "\n\n"
+                    + _REQUEST_MORE_QUESTIONS_ESCALATION
+                ),
+            )
+            if not _has_new_unanswered_questions(previous_questions, raw_arch):
+                print("\nFATAL: CTO did not produce any new founder questions after the requested follow-up round.")
+                print("  → Stopping to avoid silently returning the same architecture review flow.")
+                sys.exit(1)
+
         _write_architecture(raw_arch, company)
         review = founder_review("Architecture", arch_md_path, questions=_extract_founder_questions(raw_arch))
 
@@ -584,22 +729,73 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
     return arch_json_path.read_text(encoding="utf-8")
 
 
-def _write_roster(roster_json_str: str, company: Path) -> None:
-    """Write roster artifacts to .company/artifacts/."""
-    roster_json_path = company / "artifacts" / "roster.json"
-    roster_json_path.write_text(roster_json_str, encoding="utf-8")
+def _run_execution_plan_phase(
+    company: Path,
+    vision_content: str,
+    prd_content: str,
+    architecture_json: str,
+    llm: LLMBackend,
+) -> str:
+    """Run the VP Engineering execution-plan phase including founder review."""
+    vpe = Agent(name="VP Engineering", role_file=company / "roles" / "vpe.md", llm=llm)
+    base_context = _build_execution_plan_context(company, vision_content, prd_content, architecture_json)
 
-    roster_md_path = company / "artifacts" / "roster.md"
-    roster_md_path.write_text(_render_roster_markdown(roster_json_str), encoding="utf-8")
+    raw_plan = _agent_loop(
+        vpe,
+        base_context,
+        lambda c: _lint_execution_plan(c)[0],
+        "Execution Plan",
+    )
+    json_block = _persist_execution_plan_artifact(raw_plan, company)
 
-    print(f"\n✓ Roster JSON written: {roster_json_path}")
-    print(f"✓ Roster summary written: {roster_md_path}")
+    plan_md_path = company / "artifacts" / "execution_plan.md"
+    review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+    while True:
+        if review.action == "approve":
+            return json_block
+
+        if review.action == "answer_questions":
+            logger.debug("Applying %d founder answer(s) locally to execution plan", len(review.answers))
+            raw_plan = _apply_founder_answers_to_content(raw_plan, review.answers)
+            json_block = _persist_execution_plan_artifact(raw_plan, company)
+            review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+            continue
+
+        if review.action == "modify" and review.feedback and review.feedback.strip().startswith("{"):
+            edit_errors, _ = _lint_execution_plan(f"```json\n{review.feedback}\n```")
+            if edit_errors:
+                print("\n  Edited execution plan has validation errors:")
+                for err in edit_errors:
+                    print(f"    - {err}")
+                print("  Please try again.\n")
+                review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+                continue
+            assert review.feedback is not None  # noqa: S101
+            json_block = review.feedback
+            raw_plan = f"```json\n{json_block}\n```"
+            _write_execution_plan(json_block, company)
+            review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
+            continue
+
+        rerun_context = base_context
+        if review.action in {"modify", "request_more_questions"}:
+            rerun_context = _build_revision_context(base_context, "current_execution_plan", raw_plan)
+
+        raw_plan = _agent_loop(
+            vpe,
+            rerun_context,
+            lambda c: _lint_execution_plan(c)[0],
+            "Execution Plan",
+            founder_feedback=_review_feedback(review),
+        )
+        json_block = _persist_execution_plan_artifact(raw_plan, company)
+        review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
 
 
-def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) -> str:
-    """Run the Hiring Manager roster phase including founder review loop.
+def _run_roster_phase(company: Path, architecture_json: str, execution_plan_json: str, llm: LLMBackend) -> str:
+    """Run the Hiring Manager role-elaboration phase.
 
-    Returns the approved roster JSON string.
+    Returns the elaborated roster JSON string.
     """
     hm = Agent(
         name="Hiring Manager",
@@ -607,12 +803,15 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
         llm=llm,
     )
     standards_dir = company / "standards"
+    execution_plan = json.loads(execution_plan_json)
 
     # Build list of available standards filenames.
     available = sorted(f.name for f in standards_dir.iterdir() if f.is_file()) if standards_dir.is_dir() else []
 
     context = {
         "architecture": architecture_json,
+        "execution_plan": execution_plan_json,
+        "selected_team": json.dumps(execution_plan.get("selected_team", []), indent=2),
         "available_standards": "\n".join(f"- {s}" for s in available) if available else "(none)",
     }
 
@@ -626,81 +825,25 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
     json_block = _extract_json_block(raw_roster)
     assert json_block is not None  # lint passed, so this is guaranteed  # noqa: S101
     _write_roster(json_block, company)
-
-    roster_md_path = company / "artifacts" / "roster.md"
-    review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-    while True:
-        if review.action == "approve":
-            assert json_block is not None  # noqa: S101
-            return json_block
-
-        if review.action == "answer_questions":
-            logger.debug("Applying %d founder answer(s) locally to roster", len(review.answers))
-            raw_roster = _apply_founder_answers_to_content(raw_roster, review.answers)
-            json_block = _extract_json_block(raw_roster)
-            assert json_block is not None  # noqa: S101
-            _write_roster(json_block, company)
-            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-            continue
-
-        if review.action == "modify" and review.feedback and review.feedback.strip().startswith("{"):
-            # Founder is directly editing the roster JSON.
-            edit_errors = _lint_roster(f"```json\n{review.feedback}\n```", standards_dir=standards_dir)
-            if edit_errors:
-                print("\n  Edited roster has validation errors:")
-                for err in edit_errors:
-                    print(f"    - {err}")
-                print("  Please try again.\n")
-                review = founder_review("Roster", roster_md_path)
-                continue
-            json_block = review.feedback
-            assert json_block is not None  # noqa: S101
-            raw_roster = f"```json\n{json_block}\n```"
-            _write_roster(json_block, company)
-            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
-            continue
-
-        rerun_context = context
-        if review.action in {"modify", "request_more_questions"}:
-            rerun_context = _build_revision_context(context, "current_roster", raw_roster)
-
-        raw_roster = _agent_loop(
-            hm,
-            rerun_context,
-            lambda c: _lint_roster(c, standards_dir=standards_dir),
-            "Roster",
-            founder_feedback=_review_feedback(review),
-        )
-        json_block = _extract_json_block(raw_roster)
-        assert json_block is not None  # noqa: S101
-        _write_roster(json_block, company)
-        review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
+    return json_block
 
 
 def _generate_single_role(
     entry: dict,
     company: Path,
-    architecture_json: str,
-    role_template: str,
+    shared_context: dict[str, str],
     llm: LLMBackend,
 ) -> None:
     """Generate a single role file from a roster entry."""
     title = entry["title"]
     standards_dir = company / "standards"
-
-    # Build assigned standards content.
-    std_parts: list[str] = []
-    for std_name in entry.get("assigned_standards", []):
-        std_path = standards_dir / std_name
-        if std_path.is_file():
-            std_parts.append(std_path.read_text(encoding="utf-8"))
-    standards_content = "\n\n---\n\n".join(std_parts) if std_parts else "(no standards assigned)"
+    standards_content = _load_assigned_standards_content(standards_dir, entry.get("assigned_standards", []))
 
     context = {
-        "architecture": architecture_json,
+        **shared_context,
         "role_title": title,
         "role_responsibility": entry["responsibility"],
-        "role_template": role_template,
+        "role_brief": json.dumps(entry, indent=2),
         "assigned_standards": standards_content,
     }
 
@@ -712,7 +855,13 @@ def _generate_single_role(
     print(f"   ✓ Generated role: {title} → {role_path}")
 
 
-def _run_role_generation(company: Path, architecture_json: str, roster_json: str, llm: LLMBackend) -> None:
+def _run_role_generation(
+    company: Path,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+    llm: LLMBackend,
+) -> None:
     """Generate individual role files for each entry in the approved roster."""
     roster = json.loads(roster_json)
     agents_list = roster["hired_agents"]
@@ -731,50 +880,63 @@ def _run_role_generation(company: Path, architecture_json: str, roster_json: str
         logger.debug("Role template missing at %s; continuing with empty template", template_path)
 
     total = len(agents_list)
+    shared_context = {
+        "architecture": architecture_json,
+        "execution_plan": execution_plan_json,
+        "role_template": role_template,
+    }
 
     print(f"\n>> Generating {total} role file(s)…")
 
     for idx, entry in enumerate(agents_list, 1):
         print(f"\n── Role {idx}/{total}: {entry['title']} ──")
-        _generate_single_role(entry, company, architecture_json, role_template, llm)
+        _generate_single_role(entry, company, shared_context, llm)
 
     print(f"\n✓ Generated {total} role file(s)")
-
-
-def _expected_role_paths(company: Path, roster_json: str) -> list[Path]:
-    """Return the generated role file paths expected from *roster_json*."""
-    try:
-        data = json.loads(roster_json)
-    except json.JSONDecodeError:
-        logger.warning("Could not parse roster JSON while building expected role paths")
-        return []
-
-    agents = data.get("hired_agents")
-    if not isinstance(agents, list):
-        logger.warning("Roster JSON missing hired_agents while building expected role paths")
-        return []
-
-    paths: list[Path] = []
-    for entry in agents:
-        filename = entry.get("filename") if isinstance(entry, dict) else None
-        if isinstance(filename, str) and filename:
-            paths.append(company / "roles" / filename)
-
-    return paths
 
 
 def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int | None]:
     """Return PRD content, running the phase only when needed."""
     prd_path = exec_ctx.company / "artifacts" / "prd.md"
-    if _is_phase_done(exec_ctx.state, "prd", [prd_path]):
-        print("\n↩ Skipping PRD phase (already completed)")
+    prd_inputs = [
+        exec_ctx.vision_path,
+        exec_ctx.company / "roles" / "cpo.md",
+    ]
+    status = _evaluate_phase_status(exec_ctx, "prd", input_paths=prd_inputs, output_paths=[prd_path])
+    if status.is_current:
+        _print_skip_message("PRD", status)
         prd_content = prd_path.read_text(encoding="utf-8")
         err = _ensure_commit_complete(exec_ctx, "prd-generation")
         return prd_content, err
 
-    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("prd-generation"))
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation("PRD", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved PRD artifacts despite tracked input changes.")
+                prd_content = prd_path.read_text(encoding="utf-8")
+                err = _ensure_commit_complete(exec_ctx, "prd-generation")
+                return prd_content, err
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason("PRD", status)
+
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("prd-generation"),
+            "architecture",
+            "execution_plan",
+            "roster",
+            "roles",
+            _commit_phase_name("architecture-generation"),
+            _commit_phase_name("execution-plan-generation"),
+            _commit_phase_name("hiring"),
+        ],
+    )
     prd_content = _run_prd_phase(exec_ctx.company, exec_ctx.vision_content, exec_ctx.llm)
-    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "prd")
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "prd", input_paths=prd_inputs, output_paths=[prd_path])
     err = _ensure_commit_complete(exec_ctx, "prd-generation")
     return prd_content, err
 
@@ -786,76 +948,244 @@ def _run_or_skip_architecture_phase(
     """Return architecture JSON, running the phase only when needed."""
     arch_json_path = exec_ctx.company / "artifacts" / "architecture.json"
     arch_md_path = exec_ctx.company / "artifacts" / "architecture.md"
-    if _is_phase_done(exec_ctx.state, "architecture", [arch_json_path, arch_md_path]):
-        print("\n↩ Skipping Architecture phase (already completed)")
+    prd_path = exec_ctx.company / "artifacts" / "prd.md"
+    arch_inputs = [
+        exec_ctx.vision_path,
+        prd_path,
+        exec_ctx.company / "roles" / "cto.md",
+    ]
+    status = _evaluate_phase_status(
+        exec_ctx,
+        "architecture",
+        input_paths=arch_inputs,
+        output_paths=[arch_json_path, arch_md_path],
+    )
+    if status.is_current:
+        _print_skip_message("Architecture", status)
         arch_json = arch_json_path.read_text(encoding="utf-8")
         err = _ensure_commit_complete(exec_ctx, "architecture-generation")
         return arch_json, err
 
-    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("architecture-generation"))
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation("Architecture", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved Architecture artifacts despite tracked input changes.")
+                arch_json = arch_json_path.read_text(encoding="utf-8")
+                err = _ensure_commit_complete(exec_ctx, "architecture-generation")
+                return arch_json, err
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason("Architecture", status)
+
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("architecture-generation"),
+            "execution_plan",
+            "roster",
+            "roles",
+            _commit_phase_name("execution-plan-generation"),
+            _commit_phase_name("hiring"),
+        ],
+    )
     arch_json = _run_architecture_phase(exec_ctx.company, exec_ctx.vision_content, prd_content, exec_ctx.llm)
-    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "architecture")
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        "architecture",
+        input_paths=arch_inputs,
+        output_paths=[arch_json_path, arch_md_path],
+    )
     err = _ensure_commit_complete(exec_ctx, "architecture-generation")
     return arch_json, err
 
 
-def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str) -> str:
+def _run_or_skip_execution_plan_phase(
+    exec_ctx: PipelineExecutionContext,
+    prd_content: str,
+    arch_json: str,
+) -> tuple[str, int | None]:
+    """Return execution-plan JSON, running the phase only when needed."""
+    plan_json_path = exec_ctx.company / "artifacts" / "execution_plan.json"
+    plan_md_path = exec_ctx.company / "artifacts" / "execution_plan.md"
+    prd_path = exec_ctx.company / "artifacts" / "prd.md"
+    arch_json_path = exec_ctx.company / "artifacts" / "architecture.json"
+    plan_inputs = [
+        exec_ctx.vision_path,
+        prd_path,
+        arch_json_path,
+        exec_ctx.company / "roles" / "vpe.md",
+        exec_ctx.company / "templates" / "execution_plan_template.md",
+    ]
+    status = _evaluate_phase_status(
+        exec_ctx,
+        "execution_plan",
+        input_paths=plan_inputs,
+        output_paths=[plan_json_path, plan_md_path],
+    )
+    if status.is_current:
+        _print_skip_message("Execution Plan", status)
+        plan_json = plan_json_path.read_text(encoding="utf-8")
+        err = _ensure_commit_complete(exec_ctx, "execution-plan-generation")
+        return plan_json, err
+
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation("Execution Plan", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved Execution Plan artifacts despite tracked input changes.")
+                plan_json = plan_json_path.read_text(encoding="utf-8")
+                err = _ensure_commit_complete(exec_ctx, "execution-plan-generation")
+                return plan_json, err
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason("Execution Plan", status)
+
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            _commit_phase_name("execution-plan-generation"),
+            "roster",
+            "roles",
+            _commit_phase_name("hiring"),
+        ],
+    )
+    plan_json = _run_execution_plan_phase(
+        exec_ctx.company,
+        exec_ctx.vision_content,
+        prd_content,
+        arch_json,
+        exec_ctx.llm,
+    )
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        "execution_plan",
+        input_paths=plan_inputs,
+        output_paths=[plan_json_path, plan_md_path],
+    )
+    err = _ensure_commit_complete(exec_ctx, "execution-plan-generation")
+    return plan_json, err
+
+
+def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str, execution_plan_json: str) -> str:
     """Return roster JSON, running the phase only when needed."""
     roster_json_path = exec_ctx.company / "artifacts" / "roster.json"
     roster_md_path = exec_ctx.company / "artifacts" / "roster.md"
-    if _is_phase_done(exec_ctx.state, "roster", [roster_json_path, roster_md_path]):
-        print("\n↩ Skipping Roster phase (already completed)")
+    arch_json_path = exec_ctx.company / "artifacts" / "architecture.json"
+    plan_json_path = exec_ctx.company / "artifacts" / "execution_plan.json"
+    roster_inputs = [
+        arch_json_path,
+        plan_json_path,
+        exec_ctx.company / "roles" / "hiring_manager.md",
+        *_available_standard_paths(exec_ctx.company),
+    ]
+    status = _evaluate_phase_status(
+        exec_ctx,
+        "roster",
+        input_paths=roster_inputs,
+        output_paths=[roster_json_path, roster_md_path],
+    )
+    if status.is_current:
+        _print_skip_message("Roster", status)
         return roster_json_path.read_text(encoding="utf-8")
 
-    roster_json = _run_roster_phase(exec_ctx.company, arch_json, exec_ctx.llm)
-    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "roster")
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation("Roster", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved Roster artifacts despite tracked input changes.")
+                return roster_json_path.read_text(encoding="utf-8")
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason("Roster", status)
+
+    _clear_phase_markers(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        [
+            "roles",
+            _commit_phase_name("hiring"),
+        ],
+    )
+    roster_json = _run_roster_phase(exec_ctx.company, arch_json, execution_plan_json, exec_ctx.llm)
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        "roster",
+        input_paths=roster_inputs,
+        output_paths=[roster_json_path, roster_md_path],
+    )
     return roster_json
 
 
 def _run_or_skip_role_generation_phase(
     exec_ctx: PipelineExecutionContext,
     arch_json: str,
+    execution_plan_json: str,
     roster_json: str,
 ) -> int | None:
     """Run role generation when needed and validate expected files."""
     role_paths = _expected_role_paths(exec_ctx.company, roster_json)
-    if role_paths and _is_phase_done(exec_ctx.state, "roles", role_paths):
-        print("\n↩ Skipping Role Generation phase (already completed)")
+    arch_json_path = exec_ctx.company / "artifacts" / "architecture.json"
+    plan_json_path = exec_ctx.company / "artifacts" / "execution_plan.json"
+    roster_json_path = exec_ctx.company / "artifacts" / "roster.json"
+    role_inputs = [
+        arch_json_path,
+        plan_json_path,
+        roster_json_path,
+        exec_ctx.company / "roles" / "role_writer.md",
+        exec_ctx.company / "templates" / "role_template.md",
+        *_assigned_standard_paths(exec_ctx.company, roster_json),
+    ]
+    status = _evaluate_phase_status(exec_ctx, "roles", input_paths=role_inputs, output_paths=role_paths)
+    if role_paths and status.is_current:
+        _print_skip_message("Role Generation", status)
         return None
 
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation("Role Generation", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved Role Generation artifacts despite tracked input changes.")
+                return None
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason("Role Generation", status)
+
     _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, _commit_phase_name("hiring"))
-    _run_role_generation(exec_ctx.company, arch_json, roster_json, exec_ctx.llm)
+    _run_role_generation(exec_ctx.company, arch_json, execution_plan_json, roster_json, exec_ctx.llm)
     role_paths = _expected_role_paths(exec_ctx.company, roster_json)
     if not role_paths or not all(path.is_file() for path in role_paths):
         print("\nError: role generation completed without writing all expected role files.", file=sys.stderr)
         return 1
 
-    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "roles")
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        "roles",
+        input_paths=role_inputs,
+        output_paths=role_paths,
+    )
     return None
 
 
-def _is_phase_done(state: dict | None, phase: str, artifact_paths: list[Path]) -> bool:
+def _is_phase_done(state: dict | None, phase: str, artifact_paths: list[Path], *, workdir: Path) -> bool:
     """Check if *phase* completed previously and its artifacts still exist."""
-    if state is None:
+    record = _phase_record(state, phase)
+    completed_at = record.get("completed_at") if isinstance(record.get("completed_at"), str) else None
+    if completed_at is None:
         return False
-    completed = state.get("completed_phases", {})
-    if phase not in completed:
-        return False
-    # All expected artifacts must be present on disk.
-    return all(p.is_file() for p in artifact_paths)
 
+    if not artifact_paths:
+        return True
 
-def _prompt_vision_changed() -> str:
-    """Ask the user what to do when the vision file has changed."""
-    print("\n⚠  The vision file has changed since the last pipeline run.")
-    print("   Previously completed phases may be based on stale content.")
-    while True:
-        choice = input("   [C]ontinue from where you left off, or [R]estart from scratch? ").strip().lower()
-        if choice in ("c", "continue"):
-            return "continue"
-        if choice in ("r", "restart"):
-            return "restart"
-        print("   Please enter 'C' to continue or 'R' to restart.")
+    recorded_outputs = record.get("outputs", {}) if isinstance(record.get("outputs"), dict) else {}
+    current_outputs = snapshot_paths(workdir, artifact_paths)
+    return all(digest is not None and recorded_outputs.get(path) == digest for path, digest in current_outputs.items())
 
 
 def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: bool) -> int | None:
@@ -871,26 +1201,14 @@ def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: b
     return None
 
 
-def _init_pipeline_state(workdir: Path, vision_path: Path) -> tuple[dict, Path]:
+def _init_pipeline_state(workdir: Path) -> tuple[dict, Path]:
     """Load or create pipeline state and return ``(state, company)``."""
     company = init_company(workdir)
     print(f"\n✓ Company directory initialised: {company}")
 
     state = read_pipeline_state(workdir)
-    vision_hash = hash_file(vision_path)
-
-    if state is not None and state.get("vision_sha256") != vision_hash:
-        action = _prompt_vision_changed()
-        if action == "restart":
-            clear_company(workdir)
-            company = init_company(workdir)
-            state = None
-            print("✓ Restart: .company/ directory rebuilt.")
-
     if state is None:
-        state = {"version": "0.2", "vision_sha256": vision_hash, "completed_phases": {}}
-    else:
-        state["vision_sha256"] = vision_hash
+        state = new_pipeline_state()
     write_pipeline_state(workdir, state)
     return state, company
 
@@ -905,8 +1223,12 @@ def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
     if err is not None:
         return err
 
-    roster_json = _run_or_skip_roster_phase(exec_ctx, arch_json)
-    err = _run_or_skip_role_generation_phase(exec_ctx, arch_json, roster_json)
+    execution_plan_json, err = _run_or_skip_execution_plan_phase(exec_ctx, prd_content, arch_json)
+    if err is not None:
+        return err
+
+    roster_json = _run_or_skip_roster_phase(exec_ctx, arch_json, execution_plan_json)
+    err = _run_or_skip_role_generation_phase(exec_ctx, arch_json, execution_plan_json, roster_json)
     if err is not None:
         return err
 
@@ -971,20 +1293,30 @@ def run_pipeline(
     logger.debug("LLM backend acquired: gemini")
     print("✓ LLM backend: Gemini CLI")
 
-    # 3. Load/create pipeline state (handles vision-change prompt).
-    state, company = _init_pipeline_state(workdir, vision_path)
+    while True:
+        # 3. Load/create pipeline state.
+        state, company = _init_pipeline_state(workdir)
 
-    # 4. Execute phases.
-    exec_ctx = PipelineExecutionContext(
-        state=state,
-        company=company,
-        vision_content=vision_content,
-        llm=llm,
-        options=options,
-    )
-    result = _run_phases(exec_ctx)
-    if result != 0:
-        return result
+        # 4. Execute phases.
+        exec_ctx = PipelineExecutionContext(
+            state=state,
+            company=company,
+            vision_path=vision_path,
+            vision_content=vision_content,
+            llm=llm,
+            options=options,
+        )
+
+        try:
+            result = _run_phases(exec_ctx)
+        except PipelineRestartRequested:
+            clear_company(workdir)
+            print("\n✓ Restart: .company/ directory removed.")
+            continue
+
+        if result != 0:
+            return result
+        break
 
     # ── Done ─────────────────────────────────────────────────────────────
     print("\n" + "=" * 72)

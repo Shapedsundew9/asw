@@ -25,6 +25,7 @@ class PipelineExecutionContext:
 
     state: dict
     company: Path
+    vision_path: Path
     vision_content: str
     llm: LLMBackend
     options: PipelineRunOptions

@@ -29,7 +29,7 @@ asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--stage-all] [
 | `--no-commit` | No | off | Skip git commits at phase boundaries. Also skips the git-repository requirement. |
 | `--stage-all` | No | off | Stage the full git worktree during phase commits. Without this flag, `asw` stages only `.company/`. |
 | `--restart` | No | off | Delete the existing `.company/` directory before starting the run. |
-| `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. If you pass a custom path, its parent directory must already exist. |
+| `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. If you pass a custom path, `asw` creates missing parent directories automatically. |
 
 #### Examples
 
@@ -88,9 +88,9 @@ asw start --vision vision.md --restart
 
 On a later run:
 
-- PRD, architecture, and roster are skipped only if their expected artifacts are still present.
-- Role generation is skipped only if the generated role files expected by the approved roster are still present.
-- If the vision file changed, `asw` asks whether to continue from the saved state or restart from scratch.
+- `pipeline_state.json` records a tracked-file hash catalog plus per-phase input and output hash snapshots.
+- PRD, architecture, execution plan, roster, and role generation are skipped only when their saved snapshots still match the current tracked files.
+- If tracked inputs for a completed phase changed, `asw` stops at the earliest affected phase and lets you continue with saved artifacts, rerun that phase, or restart from scratch.
 - `--restart` bypasses saved state by deleting `.company/` before the run begins.
 
 When structural linting fails, `asw` also saves the rejected output under `.company/artifacts/failed/` before exiting.

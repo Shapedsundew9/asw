@@ -32,5 +32,6 @@ A fenced Mermaid code block (` ```mermaid `) containing a valid component or flo
 - If a `CURRENT_ARCHITECTURE` section is provided, treat it as the current draft architecture and revise it instead of regenerating from scratch.
 - If a `FOUNDER_ANSWERS` section is provided, those decisions are resolved and MUST be incorporated into the architecture output.
 - Do NOT re-ask questions that already have answers in `FOUNDER_ANSWERS` or in the current architecture JSON. Only include `founder_questions` entries for genuinely unresolved issues.
+- If founder feedback explicitly requests another question round, return at least one new unresolved founder question whenever any meaningful architectural ambiguity remains. Do NOT return an empty `founder_questions` array in that situation unless the architecture is fully resolved.
 - Do NOT include any text outside of the two fenced code blocks. No preamble, no sign-off.
 - Under NO circumstances omit any of the required JSON keys.
