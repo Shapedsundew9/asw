@@ -1,5 +1,30 @@
 # ASW-CORE-002 Change Log
 
+## Founder Question Flow & Retry Safety
+
+### Added
+
+- **Structured Founder review results** — the Founder Gate now distinguishes between approving, rejecting, modifying, answering structured questions locally, and explicitly requesting another question round.
+- **Local founder-answer incorporation** — PRD, architecture, and roster artifacts now store selected founder answers directly in their structured question data instead of immediately rerunning Gemini.
+- **Founder answer rendering** — architecture and roster markdown artifacts now display captured founder answers so the Founder can review resolved decisions before approving.
+- **Artifact-aware reruns** — when the Founder explicitly requests another question round or broader revisions, the current artifact and captured founder answers are added to the next agent context.
+- **Transient Gemini error classes** — backend invocation failures are now classified as retryable or non-retryable with explicit reasons.
+
+### Changed
+
+- `founder_review()` in `gates.py` no longer treats answered questions as generic modify feedback.
+- `_run_prd_phase()`, `_run_architecture_phase()`, and `_run_roster_phase()` in `orchestrator.py` now update founder answers locally and only rerun agents on explicit Founder actions.
+- `_agent_loop()` now retries only transient Gemini failures. Mechanical validation failures and non-transient CLI failures fail fast to avoid burning extra tokens.
+- `cpo.md`, `cto.md`, and `hiring_manager.md` now instruct agents to revise current artifacts and not re-ask already answered founder questions.
+- `scripts/test_company.sh` now uses `--restart` so manual live runs rebuild `.company/` from the latest bundled roles and templates.
+
+### Tests
+
+- `test_gates.py` now covers structured Founder actions and explicit question-round requests.
+- `test_questions.py` now covers answered-question filtering and local PRD answer incorporation.
+- `test_orchestrator.py` now covers log-derived founder loop regressions, local-answer flow across phases, artifact-aware reruns, and fail-fast retry behavior.
+- `test_gemini.py` now covers timeout, service-unavailable, and non-transient Gemini CLI failure classification.
+
 ## Pipeline Resume & Restart
 
 ### Added

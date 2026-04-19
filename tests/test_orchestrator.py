@@ -7,8 +7,12 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from asw.company import hash_file, init_company, write_pipeline_state
-from asw.orchestrator import _is_phase_done, _render_architecture_markdown, run_pipeline
+from asw.gates import FounderReviewResult
+from asw.llm.errors import LLMInvocationError, TransientLLMError
+from asw.orchestrator import _agent_loop, _is_phase_done, _render_architecture_markdown, run_pipeline
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -36,6 +40,50 @@ def test_render_architecture_markdown_string_lists() -> None:
     assert "| Frontend | N/A | HTTP |" in md
     assert "- **Requirements:** Modern browser" in md
     assert "M, o, d, e, r, n" not in md
+
+
+def test_agent_loop_retries_only_transient_backend_failures() -> None:
+    """Transient backend failures should be retried."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(side_effect=[TransientLLMError("busy", reason="busy"), "valid output"])
+
+    result = _agent_loop(agent, {"vision": "demo"}, lambda _: [], "PRD")
+
+    assert result == "valid output"
+    assert agent.run.call_count == 2
+
+
+def test_agent_loop_fails_fast_on_non_retryable_backend_error() -> None:
+    """Non-transient backend failures should not be retried."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(side_effect=LLMInvocationError("bad request", reason="non-transient-cli-error"))
+
+    with (
+        patch("asw.orchestrator.sys.exit", side_effect=SystemExit(1)) as mock_exit,
+        pytest.raises(SystemExit),
+    ):
+        _agent_loop(agent, {"vision": "demo"}, lambda _: [], "PRD")
+
+    mock_exit.assert_called_once_with(1)
+    assert agent.run.call_count == 1
+
+
+def test_agent_loop_fails_fast_on_lint_errors() -> None:
+    """Mechanically invalid output should not be sent back for another LLM attempt."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(return_value="invalid output")
+
+    with (
+        patch("asw.orchestrator.sys.exit", side_effect=SystemExit(1)) as mock_exit,
+        pytest.raises(SystemExit),
+    ):
+        _agent_loop(agent, {"vision": "demo"}, lambda _: ["Missing section"], "PRD")
+
+    mock_exit.assert_called_once_with(1)
+    assert agent.run.call_count == 1
 
 
 # ── Canned LLM responses ────────────────────────────────────────────────
@@ -147,6 +195,109 @@ Produce Python source files following PEP 8 with full type annotations and Googl
 - Under NO circumstances omit type annotations or docstrings.
 """
 
+_APPROVE_REVIEW = FounderReviewResult(action="approve")
+
+_CANNED_PRD_WITH_QUESTIONS = """\
+## Executive Summary
+
+AgenticOrg CLI orchestrates LLM-based agents.
+
+## Goals & Success Metrics
+
+- Automate SDLC phases.
+
+## Target Users
+
+Solo founders.
+
+## Functional Requirements
+
+- CLI start command.
+
+## Non-Functional Requirements
+
+- Must run inside DevContainer.
+
+## User Stories
+
+- As a founder, I want to run a single command, so that agents produce a PRD.
+
+## Acceptance Criteria Checklist
+
+- [x] CLI accepts --vision flag
+- [x] PRD is generated
+
+## System Overview Diagram
+
+```mermaid
+graph TD
+    A[Founder] --> B[CLI]
+    B --> C[CPO Agent]
+```
+
+## Risks & Mitigations
+
+- LLM hallucination → mechanical linting.
+
+## Open Questions
+
+1. Which database should we use?
+   - Choices: ["PostgreSQL", "SQLite"]
+
+```json
+{
+  "founder_questions": [
+    {
+      "question": "Which database should we use?",
+      "choices": ["PostgreSQL", "SQLite"]
+    }
+  ]
+}
+```
+"""
+
+_CANNED_ARCH_WITH_QUESTIONS = """\
+```json
+{
+    "project_name": "agenticorg",
+    "tech_stack": {"language": "Python", "version": "3.14", "frameworks": [], "tools": ["argparse"]},
+    "components": [{"name": "CLI", "responsibility": "Entry point", "interfaces": ["start"]}],
+    "data_models": [{"name": "Vision", "fields": [{"name": "content", "type": "str"}]}],
+    "api_contracts": [{"endpoint": "/start", "method": "CLI", "description": "Start pipeline"}],
+    "deployment": {"platform": "DevContainer", "strategy": "local", "requirements": ["Docker"]},
+    "founder_questions": [
+        {"question": "Should we deploy locally first?", "choices": ["Yes", "No"]}
+    ]
+}
+```
+
+```mermaid
+graph TD
+    CLI --> Orchestrator
+```
+"""
+
+_CANNED_ROSTER_WITH_QUESTIONS = """\
+```json
+{
+    "hired_agents": [
+        {
+            "title": "Python Backend Developer",
+            "filename": "python_backend_developer.md",
+            "responsibility": "Implement CLI entry point and orchestrator logic.",
+            "assigned_standards": ["python_guidelines.md"]
+        }
+    ],
+    "founder_questions": [
+        {
+            "question": "Should we hire frontend support now?",
+            "choices": ["Yes", "No"]
+        }
+    ]
+}
+```
+"""
+
 
 def _make_mock_llm() -> MagicMock:
     """Create a mock LLM backend that returns canned responses for all phases."""
@@ -178,7 +329,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
@@ -214,6 +365,132 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert state is not None
     for phase in ("prd", "architecture", "roster", "roles"):
         assert phase in state["completed_phases"]
+
+
+def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path: Path) -> None:
+    """Answering PRD founder questions should not trigger an extra Gemini call."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE])
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch(
+            "asw.orchestrator.founder_review",
+            side_effect=[
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Which database should we use?", "answer": "PostgreSQL"}],
+                ),
+                _APPROVE_REVIEW,
+                _APPROVE_REVIEW,
+                _APPROVE_REVIEW,
+            ],
+        ),
+    ):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 4
+
+    prd_content = (tmp_path / ".company" / "artifacts" / "prd.md").read_text(encoding="utf-8")
+    assert "- Answer: PostgreSQL" in prd_content
+    assert '"answer": "PostgreSQL"' in prd_content
+
+
+def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> None:
+    """PRD, architecture, and roster answers should all avoid extra LLM calls."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(
+        side_effect=[
+            _CANNED_PRD_WITH_QUESTIONS,
+            _CANNED_ARCH_WITH_QUESTIONS,
+            _CANNED_ROSTER_WITH_QUESTIONS,
+            _CANNED_ROLE,
+        ]
+    )
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch(
+            "asw.orchestrator.founder_review",
+            side_effect=[
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Which database should we use?", "answer": "PostgreSQL"}],
+                ),
+                _APPROVE_REVIEW,
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Should we deploy locally first?", "answer": "Yes"}],
+                ),
+                _APPROVE_REVIEW,
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Should we hire frontend support now?", "answer": "No"}],
+                ),
+                _APPROVE_REVIEW,
+            ],
+        ),
+    ):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 4
+
+    company = tmp_path / ".company" / "artifacts"
+    assert '"answer": "Yes"' in (company / "architecture.json").read_text(encoding="utf-8")
+    assert "Answer: Yes" in (company / "architecture.md").read_text(encoding="utf-8")
+    assert '"answer": "No"' in (company / "roster.json").read_text(encoding="utf-8")
+    assert "Answer: No" in (company / "roster.md").read_text(encoding="utf-8")
+
+
+def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_path: Path) -> None:
+    """Explicit follow-up question requests should rerun with artifact and answer context."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(
+        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_PRD, _CANNED_ARCH, _CANNED_ROSTER, _CANNED_ROLE]
+    )
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch(
+            "asw.orchestrator.founder_review",
+            side_effect=[
+                FounderReviewResult(
+                    action="answer_questions",
+                    answers=[{"question": "Which database should we use?", "answer": "PostgreSQL"}],
+                ),
+                FounderReviewResult(
+                    action="request_more_questions",
+                    feedback="Ask one more round focused on deployment assumptions.",
+                ),
+                _APPROVE_REVIEW,
+                _APPROVE_REVIEW,
+                _APPROVE_REVIEW,
+            ],
+        ),
+    ):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 5
+
+    second_user_prompt = mock_llm.invoke.call_args_list[1].args[1]
+    assert "### CURRENT_PRD" in second_user_prompt
+    assert "### FOUNDER_ANSWERS" in second_user_prompt
+    assert "PostgreSQL" in second_user_prompt
 
 
 # ── Resume / restart tests ──────────────────────────────────────────────
@@ -291,7 +568,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
@@ -319,7 +596,7 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
@@ -353,7 +630,7 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path, restart=True)
 
@@ -387,7 +664,7 @@ def test_vision_changed_continue(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch("asw.orchestrator._prompt_vision_changed", return_value="continue"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -418,7 +695,7 @@ def test_vision_changed_restart(tmp_path: Path) -> None:
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
-        patch("asw.orchestrator.founder_review", return_value=("a", None)),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
         patch("asw.orchestrator._prompt_vision_changed", return_value="restart"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)

@@ -7,6 +7,8 @@ import logging
 import subprocess
 from collections.abc import Iterable
 
+from asw.llm.errors import LLMInvocationError, TransientLLMError
+
 logger = logging.getLogger("asw.llm.gemini")
 
 _DEFAULT_TIMEOUT = 300  # seconds
@@ -41,13 +43,18 @@ class GeminiCLIBackend:
         )
         logger.debug("Timeout: %d seconds, model: %s", self._timeout, self._model or "(default)")
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=self._timeout,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"Gemini CLI timed out after {self._timeout} seconds."
+            logger.warning("Gemini CLI transient failure: timeout")
+            raise TransientLLMError(msg, reason="timeout") from exc
 
         logger.debug("Gemini CLI exit code: %d", result.returncode)
         if result.stderr:
@@ -56,7 +63,11 @@ class GeminiCLIBackend:
 
         if result.returncode != 0:
             msg = f"Gemini CLI exited with code {result.returncode}:\n{result.stderr.strip()}"
-            raise RuntimeError(msg)
+            retry_reason = self.classify_retryable_failure(result.stderr)
+            if retry_reason is not None:
+                logger.warning("Gemini CLI transient failure classified as: %s", retry_reason)
+                raise TransientLLMError(msg, reason=retry_reason)
+            raise LLMInvocationError(msg, reason="non-transient-cli-error")
 
         extracted = self.extract_text(result.stdout)
         logger.debug("Gemini extracted response (%d chars):\n%s", len(extracted), extracted)
@@ -102,3 +113,27 @@ class GeminiCLIBackend:
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+    @staticmethod
+    def classify_retryable_failure(stderr: str) -> str | None:
+        """Return a retry reason for transient Gemini CLI failures, if any."""
+        normalized = stderr.lower()
+        retryable_patterns = {
+            "rate-limit": ["rate limit", "too many requests", "429"],
+            "service-unavailable": ["service unavailable", "503", "temporarily unavailable", "server busy"],
+            "busy": ["try again later", "please retry", "busy"],
+            "transport": [
+                "connection reset",
+                "connection refused",
+                "connection aborted",
+                "network error",
+                "socket hang up",
+                "econnreset",
+                "econnrefused",
+            ],
+        }
+
+        for reason, patterns in retryable_patterns.items():
+            if any(pattern in normalized for pattern in patterns):
+                return reason
+        return None

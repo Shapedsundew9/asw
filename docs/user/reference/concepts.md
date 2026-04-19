@@ -54,6 +54,8 @@ The **CPO agent** reads your vision document and produces a **Product Requiremen
 - Risks & Mitigations
 - Open Questions
 
+If an agent includes structured `founder_questions`, the Founder Gate captures those answers **locally** in the artifact first. Answering questions does **not** automatically trigger another LLM call. After the artifact is updated, the Founder can review the updated draft, approve it, modify it, reject it, or explicitly request another question round.
+
 ### Phase B — Architecture
 
 The **CTO agent** reads the vision and the approved PRD, then produces a **system architecture** containing:
@@ -69,6 +71,8 @@ The **Hiring Manager agent** reads the approved `architecture.json` and the list
 - A `roster.md` file with a human-readable table for Founder review.
 
 The Founder Gate for the roster supports **Modify** to directly edit the role list — add, remove, or rename roles before approving.
+
+The same local-answer flow applies to any phase that emits `founder_questions`: selected choices are converted into explicit answers and written back into the artifact so the Founder can review the resolved decisions before asking the agents to run again.
 
 ### Phase C2 — Role Generation
 
@@ -97,7 +101,9 @@ Agents can have **organisational standards** injected into their system prompts.
 
 ## Mechanical Linting
 
-Before an agent's output reaches the Founder Review Gate, `asw` runs **mechanical linters** to verify structural correctness. If linting fails the agent is sent feedback and retried automatically (up to two retries). If it still fails after all retries the pipeline exits with an error.
+Before an agent's output reaches the Founder Review Gate, `asw` runs **mechanical linters** to verify structural correctness. If linting fails, the pipeline exits immediately instead of automatically resending the same prompt. This avoids spending extra tokens on responses that were already delivered but structurally invalid.
+
+Automatic retries are reserved for **transient Gemini CLI failures** only, such as timeouts, connection interruptions, rate limits, and explicit busy or service-unavailable responses. Those retry reasons are logged explicitly in the debug log.
 
 Linting checks include:
 

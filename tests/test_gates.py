@@ -9,33 +9,35 @@ from asw.gates import founder_review
 
 
 def test_approve(tmp_path: Path) -> None:
-    """Test founder approval returns 'a' with no feedback."""
+    """Test founder approval returns an approve action with no feedback."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nSome content.\n")
 
     with patch("asw.gates.questionary.select") as mock_select:
-        mock_select.return_value.ask.return_value = "a"
-        choice, feedback = founder_review("Test Phase", artifact)
+        mock_select.return_value.ask.return_value = "approve"
+        review = founder_review("Test Phase", artifact)
 
-    assert choice == "a"
-    assert feedback is None
+    assert review.action == "approve"
+    assert review.feedback is None
+    assert not review.answers
 
 
 def test_reject(tmp_path: Path) -> None:
-    """Test founder rejection returns 'r' with no feedback."""
+    """Test founder rejection returns a reject action with no feedback."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
     with patch("asw.gates.questionary.select") as mock_select:
-        mock_select.return_value.ask.return_value = "r"
-        choice, feedback = founder_review("Test Phase", artifact)
+        mock_select.return_value.ask.return_value = "reject"
+        review = founder_review("Test Phase", artifact)
 
-    assert choice == "r"
-    assert feedback is None
+    assert review.action == "reject"
+    assert review.feedback is None
+    assert not review.answers
 
 
 def test_modify(tmp_path: Path) -> None:
-    """Test founder modification returns 'm' with feedback text."""
+    """Test founder modification returns structured feedback."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
 
@@ -43,12 +45,31 @@ def test_modify(tmp_path: Path) -> None:
         patch("asw.gates.questionary.select") as mock_select,
         patch("asw.gates.questionary.text") as mock_text,
     ):
-        mock_select.return_value.ask.return_value = "m"
+        mock_select.return_value.ask.return_value = "modify"
         mock_text.return_value.ask.return_value = "Fix the intro section"
-        choice, feedback = founder_review("Test Phase", artifact)
+        review = founder_review("Test Phase", artifact)
 
-    assert choice == "m"
-    assert feedback == "Fix the intro section"
+    assert review.action == "modify"
+    assert review.feedback == "Fix the intro section"
+    assert not review.answers
+
+
+def test_request_more_questions(tmp_path: Path) -> None:
+    """Test founder can explicitly request another question round."""
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# Test\n\nContent.\n")
+
+    with (
+        patch("asw.gates.questionary.select") as mock_select,
+        patch("asw.gates.questionary.text") as mock_text,
+    ):
+        mock_select.return_value.ask.return_value = "request_more_questions"
+        mock_text.return_value.ask.return_value = "Ask about deployment constraints"
+        review = founder_review("Test Phase", artifact)
+
+    assert review.action == "request_more_questions"
+    assert review.feedback == "Ask about deployment constraints"
+    assert not review.answers
 
 
 def test_abort(tmp_path: Path) -> None:
@@ -66,7 +87,7 @@ def test_abort(tmp_path: Path) -> None:
 
 
 def test_founder_questions(tmp_path: Path) -> None:
-    """Test answering founder questions returns 'm' with answers as feedback."""
+    """Test answering founder questions returns structured question-answer pairs."""
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Test\n\nContent.\n")
     questions = [
@@ -78,15 +99,13 @@ def test_founder_questions(tmp_path: Path) -> None:
         patch("asw.gates.questionary.select") as mock_select,
         patch("asw.gates.questionary.text") as mock_text,
     ):
-        # First question: select "PG"
         mock_select.return_value.ask.return_value = "PG"
-        # Second question: type "My Project"
         mock_text.return_value.ask.return_value = "My Project"
+        review = founder_review("Test Phase", artifact, questions=questions)
 
-        choice, feedback = founder_review("Test Phase", artifact, questions=questions)
-
-    assert choice == "m"
-    assert "DB choice?" in feedback
-    assert "PG" in feedback
-    assert "Project name?" in feedback
-    assert "My Project" in feedback
+    assert review.action == "answer_questions"
+    assert review.feedback is None
+    assert review.answers == [
+        {"question": "DB choice?", "answer": "PG"},
+        {"question": "Project name?", "answer": "My Project"},
+    ]

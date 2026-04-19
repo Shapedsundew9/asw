@@ -62,5 +62,8 @@ The JSON object may also include:
 - Every `filename` MUST match the pattern `lowercase_underscore.md` (only lowercase letters, digits, and underscores before the `.md` extension).
 - Every entry in `assigned_standards` MUST be a filename from the AVAILABLE_STANDARDS list. Do NOT invent standards that do not exist.
 - The `responsibility` field MUST be specific to the architecture — reference actual component names, data models, or API endpoints.
+- If a `CURRENT_ROSTER` section is provided, treat it as the current draft roster and revise it instead of starting over from scratch.
+- If a `FOUNDER_ANSWERS` section is provided, those decisions are resolved and MUST be incorporated into the updated roster.
+- Do NOT re-ask questions that already have answers in `FOUNDER_ANSWERS` or in the current roster JSON. Only include `founder_questions` entries for genuinely unresolved issues.
 - Do NOT include any text outside of the fenced JSON code block. No preamble, no sign-off.
 - Under NO circumstances produce an empty `hired_agents` array. At least one role is always required.

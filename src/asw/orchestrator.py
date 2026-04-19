@@ -18,13 +18,25 @@ from asw.company import (
     read_pipeline_state,
     write_pipeline_state,
 )
-from asw.gates import founder_review
+from asw.founder_questions import (
+    _apply_founder_answers_to_content,
+    _apply_founder_answers_to_prd,
+    _extract_answered_founder_questions,
+    _extract_founder_questions,
+    _render_founder_question_section,
+)
+from asw.gates import FounderReviewResult, founder_review
 from asw.git import GitError, commit_state, is_git_repo
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
+from asw.llm.errors import LLMInvocationError
 
 _MAX_RETRIES = 2
+_REQUEST_MORE_QUESTIONS_FEEDBACK = (
+    "Review the current artifact, preserve all founder decisions already captured, and ask additional "
+    "founder questions only if critical unresolved issues remain."
+)
 
 logger = logging.getLogger("asw.orchestrator")
 
@@ -129,6 +141,9 @@ def _render_architecture_markdown(json_str: str, mermaid_str: str) -> str:
     lines.extend(_render_data_models(data))
     lines.extend(_render_api_contracts(data))
     lines.extend(_render_deployment(data))
+    founder_questions = data.get("founder_questions", [])
+    if isinstance(founder_questions, list) and founder_questions:
+        lines.extend(_render_founder_question_section(founder_questions, heading="### Founder Input"))
 
     return "\n".join(lines)
 
@@ -165,17 +180,23 @@ def _extract_json_block(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def _extract_founder_questions(content: str) -> list[dict] | None:
-    """Find the first JSON block that contains a 'founder_questions' key and return its value."""
-    blocks = re.findall(r"```json\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
-    for block in blocks:
-        try:
-            data = json.loads(block)
-            if isinstance(data, dict) and "founder_questions" in data:
-                return data["founder_questions"]
-        except json.JSONDecodeError:
-            continue
-    return None
+def _build_revision_context(base_context: dict[str, str], artifact_key: str, artifact_content: str) -> dict[str, str]:
+    """Build rerun context including the current artifact and founder answers."""
+    context = dict(base_context)
+    context[artifact_key] = artifact_content
+
+    answered = _extract_answered_founder_questions(artifact_content)
+    if answered:
+        context["founder_answers"] = json.dumps(answered, indent=2)
+
+    return context
+
+
+def _review_feedback(review: FounderReviewResult) -> str | None:
+    """Return the feedback string that should accompany a rerun."""
+    if review.action == "request_more_questions":
+        return review.feedback or _REQUEST_MORE_QUESTIONS_FEEDBACK
+    return review.feedback
 
 
 def _extract_mermaid_block(content: str) -> str | None:
@@ -213,7 +234,7 @@ def _agent_loop(
     *,
     founder_feedback: str | None = None,
 ) -> str:
-    """Run an agent in a retry loop until lint passes or retries are exhausted."""
+    """Run an agent, retrying only transient backend failures."""
     feedback: str | None = founder_feedback
 
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
@@ -223,7 +244,37 @@ def _agent_loop(
             f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…",
             flush=True,
         )
-        output = agent.run(context, feedback=feedback)
+        try:
+            output = agent.run(context, feedback=feedback)
+        except LLMInvocationError as exc:
+            logger.warning(
+                "Agent %s invocation failed (retryable=%s, reason=%s): %s",
+                agent.name,
+                exc.retryable,
+                exc.reason,
+                exc,
+            )
+            print(f"   Gemini call FAILED: {exc}")
+
+            if exc.retryable and attempt <= _MAX_RETRIES:
+                print(
+                    "   Retrying because the Gemini failure was classified as transient"
+                    f" ({exc.reason or 'transient error'})."
+                )
+                continue
+
+            if exc.retryable:
+                print(f"\nFATAL: {agent.name} hit a transient Gemini error after {_MAX_RETRIES + 1} attempts.")
+            else:
+                print(f"\nFATAL: {agent.name} hit a non-retryable Gemini error.")
+                print("  → Not retrying automatically to avoid burning additional tokens.")
+            sys.exit(1)
+        except RuntimeError as exc:
+            logger.warning("Agent %s invocation failed with unexpected runtime error: %s", agent.name, exc)
+            print(f"\nFATAL: {agent.name} hit an unexpected non-retryable error: {exc}")
+            print("  → Not retrying automatically to avoid burning additional tokens.")
+            sys.exit(1)
+
         logger.debug("Agent %s raw output (%d chars):\n%s", agent.name, len(output), output)
         print("   Response received.")
 
@@ -236,16 +287,10 @@ def _agent_loop(
         for err in errors:
             print(f"     - {err}")
 
-        if attempt > _MAX_RETRIES:
-            logger.debug("Agent %s exhausted retries – exiting", agent.name)
-            print(f"\nFATAL: {agent.name} failed to produce valid output after {_MAX_RETRIES + 1} attempts.")
-            print("  → Try simplifying your vision document and re-running `asw start`.")
-            sys.exit(1)
-
-        feedback = "The previous output failed mechanical validation." " Fix these errors:\n" + "\n".join(
-            f"- {e}" for e in errors
-        )
-        logger.debug("Feedback for next attempt:\n%s", feedback)
+        logger.debug("Agent %s produced mechanically invalid output – failing without retry", agent.name)
+        print(f"\nFATAL: {agent.name} produced output that failed mechanical validation.")
+        print("  → Not retrying automatically to avoid burning additional tokens.")
+        sys.exit(1)
 
     # Unreachable but keeps mypy happy.
     msg = "Unreachable"
@@ -370,6 +415,10 @@ def _render_roster_markdown(json_str: str) -> str:
         )
     lines.append("")
     lines.append(f"**Total: {len(agents)} role(s) proposed**")
+    founder_questions = data.get("founder_questions", [])
+    if isinstance(founder_questions, list) and founder_questions:
+        lines.append("")
+        lines.extend(_render_founder_question_section(founder_questions, heading="## Founder Input"))
     return "\n".join(lines)
 
 
@@ -402,27 +451,38 @@ def _lint_role(content: str) -> list[str]:
 def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     """Run the CPO PRD phase including founder review loop."""
     cpo = Agent(name="CPO", role_file=company / "roles" / "cpo.md", llm=llm)
-    prd_content = _agent_loop(cpo, {"vision": vision_content}, _lint_prd, "PRD")
+    base_context = {"vision": vision_content}
+    prd_content = _agent_loop(cpo, base_context, _lint_prd, "PRD")
 
     prd_path = company / "artifacts" / "prd.md"
     prd_path.write_text(prd_content, encoding="utf-8")
     print(f"\n✓ PRD written: {prd_path}")
 
-    questions = _extract_founder_questions(prd_content)
-    choice, feedback = founder_review("PRD", prd_path, questions=questions)
-    while choice in ("r", "m"):
-        founder_feedback = feedback if choice == "m" else None
+    review = founder_review("PRD", prd_path, questions=_extract_founder_questions(prd_content))
+    while True:
+        if review.action == "approve":
+            return prd_content
+
+        if review.action == "answer_questions":
+            logger.debug("Applying %d founder answer(s) locally to PRD", len(review.answers))
+            prd_content = _apply_founder_answers_to_prd(prd_content, review.answers)
+            prd_path.write_text(prd_content, encoding="utf-8")
+            review = founder_review("PRD", prd_path, questions=_extract_founder_questions(prd_content))
+            continue
+
+        rerun_context = base_context
+        if review.action in {"modify", "request_more_questions"}:
+            rerun_context = _build_revision_context(base_context, "current_prd", prd_content)
+
         prd_content = _agent_loop(
             cpo,
-            {"vision": vision_content},
+            rerun_context,
             _lint_prd,
             "PRD",
-            founder_feedback=founder_feedback,
+            founder_feedback=_review_feedback(review),
         )
         prd_path.write_text(prd_content, encoding="utf-8")
-        questions = _extract_founder_questions(prd_content)
-        choice, feedback = founder_review("PRD", prd_path, questions=questions)
-    return prd_content
+        review = founder_review("PRD", prd_path, questions=_extract_founder_questions(prd_content))
 
 
 def _run_architecture_phase(company: Path, vision_content: str, prd_content: str, llm: LLMBackend) -> str:
@@ -442,20 +502,31 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
     _write_architecture(raw_arch, company)
 
     arch_md_path = company / "artifacts" / "architecture.md"
-    questions = _extract_founder_questions(raw_arch)
-    choice, feedback = founder_review("Architecture", arch_md_path, questions=questions)
-    while choice in ("r", "m"):
-        founder_feedback = feedback if choice == "m" else None
+    review = founder_review("Architecture", arch_md_path, questions=_extract_founder_questions(raw_arch))
+    while True:
+        if review.action == "approve":
+            break
+
+        if review.action == "answer_questions":
+            logger.debug("Applying %d founder answer(s) locally to architecture", len(review.answers))
+            raw_arch = _apply_founder_answers_to_content(raw_arch, review.answers)
+            _write_architecture(raw_arch, company)
+            review = founder_review("Architecture", arch_md_path, questions=_extract_founder_questions(raw_arch))
+            continue
+
+        rerun_context = arch_context
+        if review.action in {"modify", "request_more_questions"}:
+            rerun_context = _build_revision_context(arch_context, "current_architecture", raw_arch)
+
         raw_arch = _agent_loop(
             cto,
-            arch_context,
+            rerun_context,
             lambda c: _lint_architecture(c)[0],
             "Architecture",
-            founder_feedback=founder_feedback,
+            founder_feedback=_review_feedback(review),
         )
         _write_architecture(raw_arch, company)
-        questions = _extract_founder_questions(raw_arch)
-        choice, feedback = founder_review("Architecture", arch_md_path, questions=questions)
+        review = founder_review("Architecture", arch_md_path, questions=_extract_founder_questions(raw_arch))
 
     # Return the architecture JSON for downstream phases.
     arch_json_path = company / "artifacts" / "architecture.json"
@@ -506,39 +577,53 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
     _write_roster(json_block, company)
 
     roster_md_path = company / "artifacts" / "roster.md"
-    questions = _extract_founder_questions(raw_roster)
-    choice, feedback = founder_review("Roster", roster_md_path, questions=questions)
-    while choice in ("r", "m"):
-        if choice == "m" and feedback and feedback.strip().startswith("{"):
+    review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
+    while True:
+        if review.action == "approve":
+            assert json_block is not None  # noqa: S101
+            return json_block
+
+        if review.action == "answer_questions":
+            logger.debug("Applying %d founder answer(s) locally to roster", len(review.answers))
+            raw_roster = _apply_founder_answers_to_content(raw_roster, review.answers)
+            json_block = _extract_json_block(raw_roster)
+            assert json_block is not None  # noqa: S101
+            _write_roster(json_block, company)
+            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
+            continue
+
+        if review.action == "modify" and review.feedback and review.feedback.strip().startswith("{"):
             # Founder is directly editing the roster JSON.
-            edit_errors = _lint_roster(f"```json\n{feedback}\n```", standards_dir=standards_dir)
+            edit_errors = _lint_roster(f"```json\n{review.feedback}\n```", standards_dir=standards_dir)
             if edit_errors:
                 print("\n  Edited roster has validation errors:")
                 for err in edit_errors:
                     print(f"    - {err}")
                 print("  Please try again.\n")
-                choice, feedback = founder_review("Roster", roster_md_path)
+                review = founder_review("Roster", roster_md_path)
                 continue
-            json_block = feedback
-            _write_roster(json_block, company)
-            choice, feedback = founder_review("Roster", roster_md_path)
-        else:
-            # Reject OR Modify with non-JSON feedback: re-run agent.
-            founder_feedback = feedback if choice == "m" else None
-            raw_roster = _agent_loop(
-                hm,
-                context,
-                lambda c: _lint_roster(c, standards_dir=standards_dir),
-                "Roster",
-                founder_feedback=founder_feedback,
-            )
-            json_block = _extract_json_block(raw_roster)
+            json_block = review.feedback
             assert json_block is not None  # noqa: S101
+            raw_roster = f"```json\n{json_block}\n```"
             _write_roster(json_block, company)
-            questions = _extract_founder_questions(raw_roster)
-            choice, feedback = founder_review("Roster", roster_md_path, questions=questions)
+            review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
+            continue
 
-    return json_block
+        rerun_context = context
+        if review.action in {"modify", "request_more_questions"}:
+            rerun_context = _build_revision_context(context, "current_roster", raw_roster)
+
+        raw_roster = _agent_loop(
+            hm,
+            rerun_context,
+            lambda c: _lint_roster(c, standards_dir=standards_dir),
+            "Roster",
+            founder_feedback=_review_feedback(review),
+        )
+        json_block = _extract_json_block(raw_roster)
+        assert json_block is not None  # noqa: S101
+        _write_roster(json_block, company)
+        review = founder_review("Roster", roster_md_path, questions=_extract_founder_questions(raw_roster))
 
 
 def _generate_single_role(
