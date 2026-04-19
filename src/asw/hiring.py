@@ -69,7 +69,10 @@ def _lint_roster_entry(entry: dict, prefix: str, available: set[str] | None, err
 
     if available is None:
         return
-    for standard in standards:
+    for idx, standard in enumerate(standards):
+        if not isinstance(standard, str) or not standard:
+            errors.append(f"{prefix}.assigned_standards[{idx}]: must be a non-empty string.")
+            continue
         if standard not in available:
             errors.append(f"{prefix}.assigned_standards: '{standard}' not found in standards directory.")
 

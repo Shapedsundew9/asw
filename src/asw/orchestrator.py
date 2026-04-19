@@ -199,8 +199,18 @@ def _clear_phase_marker(workdir: Path, state: dict, phase: str) -> None:
 
 def _clear_phase_markers(workdir: Path, state: dict, phases: list[str]) -> None:
     """Remove multiple completion markers from pipeline state."""
+    stored_phases = state.get("phases", {})
+    if not isinstance(stored_phases, dict):
+        return
+
+    changed = False
     for phase in phases:
-        _clear_phase_marker(workdir, state, phase)
+        if phase in stored_phases:
+            del stored_phases[phase]
+            changed = True
+
+    if changed:
+        write_pipeline_state(workdir, state)
 
 
 def _ensure_commit_complete(exec_ctx: PipelineExecutionContext, phase_name: str) -> int | None:
@@ -758,7 +768,7 @@ def _run_execution_plan_phase(
                 for err in edit_errors:
                     print(f"    - {err}")
                 print("  Please try again.\n")
-                review = founder_review("Execution Plan", plan_md_path)
+                review = founder_review("Execution Plan", plan_md_path, questions=_extract_founder_questions(raw_plan))
                 continue
             assert review.feedback is not None  # noqa: S101
             json_block = review.feedback

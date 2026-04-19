@@ -130,6 +130,31 @@ def test_lint_roster_unknown_standard(tmp_path: Path) -> None:
     assert any("nonexistent.md" in e for e in errors)
 
 
+def test_lint_roster_assigned_standards_rejects_non_string_items(tmp_path: Path) -> None:
+    """assigned_standards entries must be non-empty strings."""
+    standards = tmp_path / "standards"
+    standards.mkdir()
+    (standards / "python_guidelines.md").write_text("# Python")
+
+    roster = {
+        "hired_agents": [
+            {
+                "title": "Dev",
+                "filename": "dev.md",
+                "responsibility": "Code.",
+                "mission": "Ship code.",
+                "scope": "Own one slice of the product.",
+                "key_deliverables": ["Deliver feature work"],
+                "collaborators": ["Founder"],
+                "assigned_standards": ["python_guidelines.md", {"name": "bad"}],
+            }
+        ]
+    }
+
+    errors = _lint_roster(_wrap_json(roster), standards_dir=standards)
+    assert any("assigned_standards[1]" in e for e in errors)
+
+
 def test_lint_roster_no_standards_dir() -> None:
     """When standards_dir is None, standards refs should not be checked."""
     roster = {

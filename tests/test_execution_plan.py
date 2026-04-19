@@ -79,6 +79,16 @@ def test_validate_execution_plan_rejects_unknown_phase_role() -> None:
     assert any("Unknown Role" in error for error in errors)
 
 
+def test_validate_execution_plan_non_list_selected_team_roles_only_reports_type_error() -> None:
+    """Non-list selected_team_roles should not trigger role-membership errors."""
+    payload = json.loads(json.dumps(_VALID_EXECUTION_PLAN))
+    payload["phases"][0]["selected_team_roles"] = "Python Backend Developer"
+
+    errors = validate_execution_plan(json.dumps(payload))
+    assert any("selected_team_roles: must be an array." in error for error in errors)
+    assert not any("is not present in selected_team" in error for error in errors)
+
+
 def test_render_execution_plan_markdown() -> None:
     """Rendered execution plan should contain phases, team details, and founder input."""
     md = _render_execution_plan_markdown(json.dumps(_VALID_EXECUTION_PLAN))

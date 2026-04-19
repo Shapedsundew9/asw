@@ -113,9 +113,13 @@ def _validate_phases(data: dict, selected_titles: set[str], errors: list[str]) -
         _expect_non_empty_string(phase, "scope", prefix, errors)
         _expect_string_list(phase, "deliverables", prefix, errors)
         _expect_string_list(phase, "exit_criteria", prefix, errors)
+        selected_team_roles = phase.get("selected_team_roles")
         _expect_string_list(phase, "selected_team_roles", prefix, errors)
 
-        for role in phase.get("selected_team_roles", []):
+        if not isinstance(selected_team_roles, list):
+            continue
+
+        for role in selected_team_roles:
             if isinstance(role, str) and selected_titles and role not in selected_titles:
                 errors.append(f"{prefix}.selected_team_roles: '{role}' is not present in selected_team.")
 
