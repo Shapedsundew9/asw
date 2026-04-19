@@ -14,4 +14,4 @@ python3 -m venv .venv
 .venv/bin/pip install -e .[dev]
 
 echo "Installing npm CLIs..."
-npm install -g @google/gemini-cli @github/copilot markdownlint-cli2
+npm install -g @google/gemini-cli markdownlint-cli2

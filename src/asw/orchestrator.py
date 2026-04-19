@@ -23,6 +23,7 @@ from asw.company import (
     write_failed_artifact,
     write_pipeline_state,
 )
+from asw.core_roles import MANDATORY_CORE_ROLE_FILENAMES
 from asw.execution_plan import _lint_execution_plan, _write_execution_plan
 from asw.founder_questions import (
     _apply_founder_answers_to_content,
@@ -836,6 +837,11 @@ def _generate_single_role(
 ) -> None:
     """Generate a single role file from a roster entry."""
     title = entry["title"]
+    role_path = company / "roles" / entry["filename"]
+    if entry["filename"] in MANDATORY_CORE_ROLE_FILENAMES and role_path.is_file():
+        print(f"   ✓ Using bundled core role: {title} → {role_path}")
+        return
+
     standards_dir = company / "standards"
     standards_content = _load_assigned_standards_content(standards_dir, entry.get("assigned_standards", []))
 
@@ -850,7 +856,6 @@ def _generate_single_role(
     rw = Agent(name="Role Writer", role_file=company / "roles" / "role_writer.md", llm=llm)
     role_content = _agent_loop(rw, context, _lint_role, f"Role: {title}")
 
-    role_path = company / "roles" / entry["filename"]
     role_path.write_text(role_content, encoding="utf-8")
     print(f"   ✓ Generated role: {title} → {role_path}")
 

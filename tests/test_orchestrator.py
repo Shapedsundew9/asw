@@ -200,10 +200,22 @@ _CANNED_EXECUTION_PLAN = """\
             "scope": "Use local-only infrastructure and defer hosted operations.",
             "deliverables": ["Core flow works locally", "Acceptance checks exist"],
             "exit_criteria": ["Founder can run the product locally", "Core checks pass"],
-            "selected_team_roles": ["Python Backend Developer"]
+            "selected_team_roles": ["Development Lead", "DevOps Engineer", "Python Backend Developer"]
         }
     ],
     "selected_team": [
+        {
+            "title": "Development Lead",
+            "filename": "development_lead.md",
+            "responsibility": "Coordinate phase design, task ownership, and implementation review.",
+            "rationale": "This role is immediately needed to turn the approved plan into executable delivery structure."
+        },
+        {
+            "title": "DevOps Engineer",
+            "filename": "devops_engineer.md",
+            "responsibility": "Prepare the delivery environment and required tooling.",
+            "rationale": "This role is immediately needed to keep tooling and environment setup repeatable."
+        },
         {
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
@@ -213,15 +225,15 @@ _CANNED_EXECUTION_PLAN = """\
     ],
     "generic_role_catalog": [
         {
-            "title": "DevOps Engineer",
-            "summary": "Own deployment automation and runtime operations.",
-            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+            "title": "Documentation Standards Lead",
+            "summary": "Own tutorials, training material, and documentation quality control.",
+            "when_needed": "Needed once the product surface evolves faster than the docs stay current."
         }
     ],
     "deferred_roles_or_capabilities": [
         {
-            "name": "Production DevOps",
-            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
+            "name": "Hosted Operations Platform",
+            "rationale": "Deferred until the product needs hosted infrastructure, monitoring, and persistent storage."
         }
     ]
 }
@@ -232,6 +244,32 @@ _CANNED_ROSTER = """\
 ```json
 {
     "hired_agents": [
+        {
+            "title": "Development Lead",
+            "filename": "development_lead.md",
+            "responsibility": "Coordinate phase design, task ownership, and implementation review.",
+            "mission": "Turn the approved execution plan into clear team delivery structure.",
+            "scope": "Own design harmonisation, task sequencing, and delta review for the approved phase.",
+            "key_deliverables": [
+                "Publish phase design artifacts",
+                "Review implementation deltas"
+            ],
+            "collaborators": ["Founder", "DevOps Engineer"],
+            "assigned_standards": []
+        },
+        {
+            "title": "DevOps Engineer",
+            "filename": "devops_engineer.md",
+            "responsibility": "Prepare the delivery environment and required tooling.",
+            "mission": "Make the approved implementation phase executable inside the project environment.",
+            "scope": "Own environment setup, tooling installation, and operational guardrails for the phase.",
+            "key_deliverables": [
+                "Prepare setup steps",
+                "Document environment changes"
+            ],
+            "collaborators": ["Development Lead", "Founder"],
+            "assigned_standards": []
+        },
         {
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
@@ -364,10 +402,22 @@ _CANNED_EXECUTION_PLAN_WITH_QUESTIONS = """\
             "scope": "Use local-only infrastructure and defer hosted operations.",
             "deliverables": ["Core flow works locally"],
             "exit_criteria": ["Founder can run the product locally"],
-            "selected_team_roles": ["Python Backend Developer"]
+            "selected_team_roles": ["Development Lead", "DevOps Engineer", "Python Backend Developer"]
         }
     ],
     "selected_team": [
+        {
+            "title": "Development Lead",
+            "filename": "development_lead.md",
+            "responsibility": "Coordinate phase design, task ownership, and implementation review.",
+            "rationale": "This role is immediately needed to turn the approved plan into executable delivery structure."
+        },
+        {
+            "title": "DevOps Engineer",
+            "filename": "devops_engineer.md",
+            "responsibility": "Prepare the delivery environment and required tooling.",
+            "rationale": "This role is immediately needed to keep tooling and environment setup repeatable."
+        },
         {
             "title": "Python Backend Developer",
             "filename": "python_backend_developer.md",
@@ -377,15 +427,15 @@ _CANNED_EXECUTION_PLAN_WITH_QUESTIONS = """\
     ],
     "generic_role_catalog": [
         {
-            "title": "DevOps Engineer",
-            "summary": "Own deployment automation and runtime operations.",
-            "when_needed": "Needed once the product moves beyond a local-only validation workflow."
+            "title": "Documentation Standards Lead",
+            "summary": "Own tutorials, training material, and documentation quality control.",
+            "when_needed": "Needed once the product surface evolves faster than the docs stay current."
         }
     ],
     "deferred_roles_or_capabilities": [
         {
-            "name": "Production DevOps",
-            "rationale": "Deferred until the product needs hosted infrastructure and persistent storage."
+            "name": "Hosted Operations Platform",
+            "rationale": "Deferred until the product needs hosted infrastructure, monitoring, and persistent storage."
         }
     ],
     "founder_questions": [
@@ -402,6 +452,15 @@ _CANNED_EXECUTION_PLAN_WITH_QUESTIONS = """\
 def _extract_json_block(content: str) -> str:
     """Extract the JSON body from a fenced JSON block."""
     return content.split("```json\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+
+
+def _expected_role_output_paths(company: Path) -> list[Path]:
+    """Return the role files expected from the canned roster."""
+    return [
+        company / "roles" / "development_lead.md",
+        company / "roles" / "devops_engineer.md",
+        company / "roles" / "python_backend_developer.md",
+    ]
 
 
 def _make_mock_llm() -> MagicMock:
@@ -459,14 +518,20 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert (company / "artifacts" / "roster.md").is_file()
 
     execution_plan = json.loads((company / "artifacts" / "execution_plan.json").read_text())
-    assert execution_plan["selected_team"][0]["title"] == "Python Backend Developer"
+    assert {entry["title"] for entry in execution_plan["selected_team"]} == {
+        "Development Lead",
+        "DevOps Engineer",
+        "Python Backend Developer",
+    }
 
     roster = json.loads((company / "artifacts" / "roster.json").read_text())
-    assert len(roster["hired_agents"]) == 1
-    assert roster["hired_agents"][0]["title"] == "Python Backend Developer"
-    assert roster["hired_agents"][0]["mission"] == "Deliver the first validated backend workflow for Phase 1."
+    assert len(roster["hired_agents"]) == 3
+    backend_entry = next(entry for entry in roster["hired_agents"] if entry["title"] == "Python Backend Developer")
+    assert backend_entry["mission"] == "Deliver the first validated backend workflow for Phase 1."
 
     # Verify generated role file was written.
+    assert (company / "roles" / "development_lead.md").is_file()
+    assert (company / "roles" / "devops_engineer.md").is_file()
     assert (company / "roles" / "python_backend_developer.md").is_file()
     role_content = (company / "roles" / "python_backend_developer.md").read_text()
     assert "# Role: Python Backend Developer" in role_content
@@ -831,7 +896,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
                     company / "templates" / "role_template.md",
                     company / "standards" / "python_guidelines.md",
                 ],
-                [company / "roles" / "python_backend_developer.md"],
+                _expected_role_output_paths(company),
             ),
         },
     )
@@ -1000,7 +1065,7 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
                     company / "templates" / "role_template.md",
                     company / "standards" / "python_guidelines.md",
                 ],
-                [company / "roles" / "python_backend_developer.md"],
+                _expected_role_output_paths(company),
             ),
         },
     )
@@ -1062,7 +1127,7 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
                     tmp_path / ".company" / "templates" / "role_template.md",
                     tmp_path / ".company" / "standards" / "python_guidelines.md",
                 ],
-                [company / "roles" / "python_backend_developer.md"],
+                _expected_role_output_paths(company),
             ),
         },
     )

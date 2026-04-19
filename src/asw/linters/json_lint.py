@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 
+from asw.core_roles import MANDATORY_CORE_ROLE_TITLES, MANDATORY_CORE_ROLES
+
 _REQUIRED_KEYS = (
     "project_name",
     "tech_stack",
@@ -70,6 +72,7 @@ def _validate_founder_questions(data: dict, errors: list[str]) -> None:
 def _validate_selected_team(data: dict, errors: list[str]) -> set[str]:
     """Validate the selected team and return the discovered role titles."""
     selected_titles: set[str] = set()
+    selected_filenames_by_title: dict[str, str] = {}
     selected_team = data.get("selected_team")
     if not isinstance(selected_team, list) or not selected_team:
         errors.append("selected_team: must be a non-empty array.")
@@ -92,6 +95,15 @@ def _validate_selected_team(data: dict, errors: list[str]) -> set[str]:
         title = entry.get("title")
         if isinstance(title, str) and title.strip():
             selected_titles.add(title)
+            if isinstance(filename, str) and filename.strip():
+                selected_filenames_by_title[title] = filename
+
+    for role in MANDATORY_CORE_ROLES:
+        if role.title not in selected_titles:
+            errors.append(f"selected_team: missing mandatory role '{role.title}'.")
+            continue
+        if selected_filenames_by_title.get(role.title) != role.filename:
+            errors.append(f"selected_team: mandatory role '{role.title}' must use filename '{role.filename}'.")
     return selected_titles
 
 
@@ -122,6 +134,9 @@ def _validate_phases(data: dict, selected_titles: set[str], errors: list[str]) -
         for role in selected_team_roles:
             if isinstance(role, str) and selected_titles and role not in selected_titles:
                 errors.append(f"{prefix}.selected_team_roles: '{role}' is not present in selected_team.")
+        for core_role in MANDATORY_CORE_ROLE_TITLES:
+            if core_role not in selected_team_roles:
+                errors.append(f"{prefix}.selected_team_roles: must include '{core_role}'.")
 
 
 def _validate_generic_role_catalog(data: dict, errors: list[str]) -> None:

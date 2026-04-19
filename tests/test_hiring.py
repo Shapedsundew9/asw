@@ -16,8 +16,35 @@ def _wrap_json(obj: dict | list | str) -> str:
     return f"```json\n{json.dumps(obj, indent=2)}\n```"
 
 
+def _mandatory_role_entries() -> list[dict]:
+    """Return the immutable core roster entries used in valid fixtures."""
+    return [
+        {
+            "title": "Development Lead",
+            "filename": "development_lead.md",
+            "responsibility": "Coordinate phase design, task ownership, and implementation review.",
+            "mission": "Turn the approved execution plan into clear team delivery structure.",
+            "scope": "Own design harmonisation, task sequencing, and delta review for the approved phase.",
+            "key_deliverables": ["Publish phase design artifacts", "Review implementation deltas"],
+            "collaborators": ["Founder", "DevOps Engineer"],
+            "assigned_standards": [],
+        },
+        {
+            "title": "DevOps Engineer",
+            "filename": "devops_engineer.md",
+            "responsibility": "Prepare the delivery environment and required tooling for the team.",
+            "mission": "Make the approved implementation phase executable inside the project environment.",
+            "scope": "Own environment setup, tooling installation, and operational guardrails for the phase.",
+            "key_deliverables": ["Prepare setup steps", "Document environment changes"],
+            "collaborators": ["Development Lead", "Founder"],
+            "assigned_standards": [],
+        },
+    ]
+
+
 _VALID_ROSTER = {
     "hired_agents": [
+        *_mandatory_role_entries(),
         {
             "title": "Backend Developer",
             "filename": "backend_developer.md",
@@ -81,7 +108,7 @@ def test_lint_roster_empty_array() -> None:
 
 def test_lint_roster_missing_keys() -> None:
     """Entry missing required keys should be an error."""
-    roster = {"hired_agents": [{"title": "Dev"}]}
+    roster = {"hired_agents": [*_mandatory_role_entries(), {"title": "Dev"}]}
     errors = _lint_roster(_wrap_json(roster))
     assert any("missing keys" in e for e in errors)
 
@@ -155,10 +182,29 @@ def test_lint_roster_assigned_standards_rejects_non_string_items(tmp_path: Path)
     assert any("assigned_standards[1]" in e for e in errors)
 
 
+def test_lint_roster_missing_mandatory_devops_engineer() -> None:
+    """DevOps Engineer is an immutable core role and must be present."""
+    roster = {"hired_agents": [entry for entry in _VALID_ROSTER["hired_agents"] if entry["title"] != "DevOps Engineer"]}
+
+    errors = _lint_roster(_wrap_json(roster))
+    assert any("missing mandatory role 'DevOps Engineer'" in e for e in errors)
+
+
+def test_lint_roster_missing_mandatory_development_lead() -> None:
+    """Development Lead is an immutable core role and must be present."""
+    roster = {
+        "hired_agents": [entry for entry in _VALID_ROSTER["hired_agents"] if entry["title"] != "Development Lead"]
+    }
+
+    errors = _lint_roster(_wrap_json(roster))
+    assert any("missing mandatory role 'Development Lead'" in e for e in errors)
+
+
 def test_lint_roster_no_standards_dir() -> None:
     """When standards_dir is None, standards refs should not be checked."""
     roster = {
         "hired_agents": [
+            *_mandatory_role_entries(),
             {
                 "title": "Dev",
                 "filename": "dev.md",
@@ -168,7 +214,7 @@ def test_lint_roster_no_standards_dir() -> None:
                 "key_deliverables": ["Deliver feature work"],
                 "collaborators": ["Founder"],
                 "assigned_standards": ["anything.md"],
-            }
+            },
         ]
     }
     errors = _lint_roster(_wrap_json(roster), standards_dir=None)
@@ -239,11 +285,12 @@ def test_render_roster_markdown() -> None:
     md = _render_roster_markdown(json.dumps(_VALID_ROSTER))
 
     assert "# Proposed Roster" in md
+    assert "Development Lead" in md
     assert "Backend Developer" in md
     assert "Frontend Developer" in md
     assert "backend_developer.md" in md
     assert "Deliver the first backend milestone." in md
-    assert "**Total: 2 role(s) elaborated**" in md
+    assert "**Total: 4 role(s) elaborated**" in md
 
 
 def test_render_roster_markdown_invalid_json() -> None:
