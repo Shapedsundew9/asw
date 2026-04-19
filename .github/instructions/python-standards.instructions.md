@@ -1,9 +1,7 @@
 ---
 description: "Use when creating or modifying Python modules, functions, classes, or pytest tests in ASW. Covers future annotations, type hints, docstrings, formatting, logging, and exception handling."
 name: "ASW Python Standards"
-applyTo:
-  - "src/**/*.py"
-  - "tests/**/*.py"
+applyTo: "src/**/*.py, tests/**/*.py"
 ---
 
 # ASW Python Standards
