@@ -1,23 +1,26 @@
-# AgenticOrg CLI — User Documentation
+# AgenticOrg CLI User Documentation
 
-Welcome to the user documentation for **AgenticOrg CLI** (`asw`). `asw` orchestrates a simulated company of LLM-based agents to take your product idea from a plain-English vision document through to a linted, git-committed PRD and system architecture.
+Use these guides to install `asw`, run the V0.2 pipeline, and understand the artifacts and state it creates.
+
+`asw` orchestrates a simulated company of LLM-based agents that turns a vision document into a PRD, system architecture, proposed implementation roster, and generated role prompts.
 
 ## Getting Started
 
 | Document | Description |
 |----------|-------------|
-| [Installation](getting-started/installation.md) | Prerequisites and install steps |
-| [Quickstart](getting-started/quickstart.md) | Run your first pipeline in five minutes |
+| [Installation](getting-started/installation.md) | Prerequisites, install steps, and first-run verification |
+| [Quickstart](getting-started/quickstart.md) | Run your first complete pipeline and review each gate |
 
 ## Tutorials
 
 | Document | Description |
 |----------|-------------|
-| [From Idea to Architecture](tutorials/first-project.md) | End-to-end walkthrough with a real project example |
+| [First Complete Run](tutorials/first-project.md) | Guided walkthrough of PRD, architecture, roster, and generated roles |
 
 ## Reference
 
 | Document | Description |
 |----------|-------------|
-| [CLI Reference](reference/cli.md) | All commands, flags, and exit codes |
-| [Key Concepts](reference/concepts.md) | The pipeline, agents, review gates, and `.company/` directory |
+| [CLI Reference](reference/cli.md) | All commands, flags, examples, and exit codes |
+| [Key Concepts](reference/concepts.md) | How phases, review gates, linting, commits, and generated roles fit together |
+| [Runs, State, and Recovery](reference/runs-and-state.md) | Resume behavior, vision changes, restarts, and debug logging |

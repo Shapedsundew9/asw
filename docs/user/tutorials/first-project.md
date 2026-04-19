@@ -1,18 +1,17 @@
-# Tutorial: From Idea to Architecture
+# Tutorial: First Complete Run
 
-In this tutorial you will run `asw` end to end on a real project idea and learn what to do at each Founder Review Gate. By the end you will have a git-committed PRD and system architecture ready to hand to the next stage of your SDLC.
+This tutorial walks through a realistic V0.2 run so you can evaluate each artifact, handle founder questions, and understand what a finished `.company/` workspace looks like.
 
 **What you will learn:**
 
-- How to write a vision document that produces good agent output
-- How to evaluate the PRD and architecture artifacts
-- When to Approve, Reject, or Modify
+- How to write a vision document that produces useful downstream artifacts.
+- How to review the PRD, architecture, and roster gates.
+- How generated roles inherit responsibilities and standards.
+- How reruns, restarts, and debug logs fit into a real workflow.
 
 **Prerequisites:** Complete [Installation](../getting-started/installation.md) first.
 
----
-
-## 1 — Set Up the Project
+## 1 - Set Up The Project
 
 ```bash
 mkdir link-vault
@@ -21,11 +20,11 @@ git init
 git commit --allow-empty -m "Initial commit"
 ```
 
----
+If you do not want git commits yet, you can still follow the tutorial and add `--no-commit` to the run command later.
 
-## 2 — Write the Vision Document
+## 2 - Write The Vision Document
 
-Create `vision.md`. Think of this as a two-minute pitch to a competent founding team — focus on *what* you want to build and *for whom*, not *how*.
+Create `vision.md`. Focus on what you want to build, who it is for, and what success looks like. Avoid over-specifying implementation details unless they are real constraints.
 
 ```markdown
 # Vision: Link Vault
@@ -46,179 +45,216 @@ Solo knowledge workers and researchers who outgrow browser bookmarks.
 - Browser extension or bookmarklet for one-click saving.
 - Self-hostable with a Docker Compose setup.
 
-## Non-Goals (V1)
+## Non-Goals
 - Sharing or collaboration features.
 - Mobile native apps.
 
 ## Definition of Done
-A self-hosted web app that passes acceptance criteria, with Docker Compose
+A self-hosted web app with acceptance criteria, Docker Compose support,
 and unit tests.
 ```
 
-**Tips for a strong vision document:**
+Good vision documents usually do three things well:
 
-- Be specific about user-facing behaviours (saves, searches, exports) rather than implementation details.
-- Include a "Non-Goals" section — it prevents the CPO agent from over-scoping.
-- A short Definition of Done keeps the PRD focused.
+- They describe user-facing behavior clearly.
+- They name important constraints, such as self-hosting or export formats.
+- They include non-goals so the PRD does not sprawl.
 
----
+## 3 - Start The Pipeline
 
-## 3 — Start the Pipeline
+Run the full pipeline and capture a log while you learn:
 
 ```bash
-asw start --vision vision.md
+asw start --vision vision.md --debug link-vault.log
 ```
 
-You will see live progress in the terminal:
+The early output looks like this:
 
 ```text
 ========================================================================
-  AgenticOrg CLI – V0.1 Pipeline
+  AgenticOrg CLI – V0.2 Pipeline
 ========================================================================
-
-✓ Company directory initialised: /path/to/link-vault/.company
 ✓ Vision loaded: vision.md (751 chars)
 ✓ LLM backend: Gemini CLI
 
+✓ Company directory initialised: /path/to/link-vault/.company
+
 >> CPO – attempt 1
    Invoking CPO via Gemini CLI (may take up to 5 min)…
-   Response received.
-   Lint passed for PRD.
-
-✓ PRD written: .company/artifacts/prd.md
 ```
 
-If the CPO agent produces a structurally invalid PRD, you will see lint errors and the agent will automatically retry (up to two more times) with feedback. If all retries fail, the pipeline exits — rewrite your vision and try again.
+Two important rules for the rest of the tutorial:
 
----
+- `asw` retries only transient Gemini failures, such as timeouts or busy responses.
+- If an artifact fails mechanical linting, the run exits instead of auto-resubmitting the same invalid output.
 
-## 4 — Review the PRD
+## 4 - Review The PRD Carefully
 
-The pipeline pauses at the first Founder Review Gate and prints a preview of the PRD.
-
-Open the full document in another terminal to read it properly:
+When the CPO finishes, inspect the artifact:
 
 ```bash
-cat .company/artifacts/prd.md
+sed -n '1,220p' .company/artifacts/prd.md
 ```
 
-Or in VS Code:
+Check these first:
 
-```bash
-code .company/artifacts/prd.md
-```
+- The product summary should match your intent.
+- Functional requirements should include everything in the vision and avoid invented extras.
+- Acceptance criteria should be concrete enough to test.
+- The Mermaid diagram should reflect the right system shape.
 
-**What to look for:**
+If the PRD contains structured founder questions, `asw` asks them before showing the review menu. Your answers are written into the PRD locally, which lets you inspect the resolved decisions before any rerun happens.
 
-- **Executive Summary** — does it correctly describe your product?
-- **Functional Requirements** — are all your core requirements captured? Are there any invented requirements you do not want?
-- **User Stories** — do they reflect real user goals?
-- **System Overview Diagram** — does the Mermaid diagram match your mental model of the system?
-- **Open Questions** — are there genuine unknowns worth addressing?
-
-### Decision Guide
+Choose the review action that matches the situation:
 
 | Situation | Best Choice |
 |-----------|-------------|
-| The PRD accurately reflects your vision | `A` — Approve |
-| The PRD hallucinated features you did not ask for | `R` — Reject (agent starts clean) |
-| One or two sections need adjustment | `M` — Modify, then write targeted feedback |
-| You want to rethink the vision entirely | `S` — Stop, revise `vision.md`, re-run |
+| The PRD is accurate and complete | Approve |
+| The PRD drifted badly from the vision | Reject |
+| A few sections need targeted changes | Modify |
+| The PRD still has unresolved unknowns | Request More Questions |
+| You want to stop and rethink the project | Stop |
 
-**Example Modify feedback** (enter after pressing `M`):
-
-```text
-Remove all references to a mobile app. The Non-Goals section clearly
-excludes mobile native apps. Also, the System Overview Diagram should
-show the browser extension connecting to the API, not directly to the
-database.
-```
-
-Press **Enter on a blank line** to submit.
-
----
-
-## 5 — After PRD Approval
-
-Once you approve, `asw` commits the PRD:
+Example modify feedback:
 
 ```text
-✓ Company directory initialised: ...
-  (no changes to commit for phase 'prd-generation')
+Remove all references to team collaboration in V1. The vision is for a
+personal tool. In the diagram, the browser extension should talk to the
+API, not directly to the database.
 ```
 
-> If your git index already had these files, `asw` notes there is nothing new to commit — that is fine.
+In the multiline feedback prompt, press `Esc`, then `Enter`, to submit.
 
-The CTO agent then runs immediately:
+## 5 - Review The Architecture
 
-```text
->> CTO – attempt 1
-   Invoking CTO via Gemini CLI (may take up to 5 min)…
-   Response received.
-   Lint passed for Architecture.
+After PRD approval, the CTO generates `architecture.json` and `architecture.md`.
 
-✓ Architecture JSON written: .company/artifacts/architecture.json
-✓ Architecture diagram written: .company/artifacts/architecture.md
-```
-
----
-
-## 6 — Review the Architecture
-
-Open the artifacts:
+Inspect both:
 
 ```bash
 cat .company/artifacts/architecture.json
-cat .company/artifacts/architecture.md
+sed -n '1,240p' .company/artifacts/architecture.md
 ```
 
-The JSON spec covers: `project_name`, `tech_stack`, `components`, `data_models`, `api_contracts`, and `deployment`. The Markdown file contains a Mermaid component diagram.
+Look for alignment between the vision, PRD, and technical choices:
 
-**What to look for:**
+- Is the tech stack appropriate for a self-hosted bookmark app?
+- Do the components map cleanly to the browser extension, API, search, and storage needs?
+- Do the data models contain the fields you would expect for bookmarks, notes, and tags?
+- Do the API contracts support the user-facing behaviors from the vision?
 
-- **Tech Stack** — is the chosen language and framework reasonable for your project?
-- **Components** — are the major building blocks sensible (e.g. API server, database, browser extension)?
-- **Data Models** — do the fields match what you described in the vision?
-- **API Contracts** — are the endpoints the right level of granularity?
-- **Deployment** — does the platform and strategy match "self-hostable with Docker Compose"?
+If the architecture raises deployment or stack questions, **Request More Questions** is often better than making the CTO guess.
 
-Use the same `A / R / M / S` decision guide as the PRD gate.
+## 6 - Review And Adjust The Roster
 
----
+After architecture approval, the Hiring Manager proposes a roster in:
 
-## 7 — Final State
+```bash
+cat .company/artifacts/roster.json
+sed -n '1,220p' .company/artifacts/roster.md
+```
 
-After both gates are approved your project contains:
+This is the phase where you control scope, headcount, and specialization.
+
+Review the roster for:
+
+- Missing roles for major architecture areas.
+- Overlapping responsibilities that should be merged.
+- Incorrect standards assignments.
+- Filenames that will be awkward to maintain later.
+
+You have two useful modify strategies:
+
+- Write natural-language feedback if you want the Hiring Manager to rethink the roster.
+- Paste an edited JSON object if you already know the exact roles you want. `asw` validates that JSON before accepting it.
+
+For example, if the proposed roster adds a dedicated frontend role too early, you might replace it with a single full-stack role and keep only `python_guidelines.md` assigned.
+
+## 7 - Inspect The Generated Roles
+
+After roster approval, `asw` generates one role prompt per approved entry. Inspect the results:
+
+```bash
+ls .company/roles
+sed -n '1,220p' .company/roles/python_backend_developer.md
+```
+
+Generated role files should feel specific, not generic. Each one should:
+
+- Reference real parts of the architecture.
+- Describe exactly what the role produces.
+- Enforce any assigned standards.
+
+The bundled standards also remain editable for future runs:
+
+```bash
+ls .company/standards
+sed -n '1,200p' .company/standards/python_guidelines.md
+```
+
+## 8 - Understand The Finished Workspace
+
+After a successful run, you should have a structure like this:
 
 ```text
 link-vault/
   vision.md
   .company/
+    pipeline_state.json
     roles/
       cpo.md
       cto.md
+      hiring_manager.md
+      role_writer.md
+      python_backend_developer.md
     artifacts/
       prd.md
       architecture.json
       architecture.md
-    state/
+      roster.json
+      roster.md
+    memory/
+    templates/
+    standards/
 ```
 
-And your git log has two auto-commits:
+If commits are enabled, your git log will usually contain three `asw` commits:
 
 ```bash
 git log --oneline
 ```
 
 ```text
-a1b2c3d [asw] Phase: architecture-generation completed
-7e8f9a0 [asw] Phase: prd-generation completed
-1234567 Initial commit
+a1b2c3d [asw] Phase: hiring completed
+7e8f9a0 [asw] Phase: architecture-generation completed
+1234567 [asw] Phase: prd-generation completed
 ```
 
----
+## 9 - Rerun Safely After Changes
 
-## Diagram: What the Pipeline Did
+The easiest way to resume is to run the same command again:
+
+```bash
+asw start --vision vision.md
+```
+
+Useful expectations:
+
+- If the saved artifacts are still present, completed phases are skipped.
+- If you changed the vision file, `asw` asks whether to continue or restart.
+- If you want a guaranteed clean slate, use `--restart`.
+
+Examples:
+
+```bash
+asw start --vision vision.md --restart
+```
+
+```bash
+asw start --vision vision.md --debug second-run.log
+```
+
+## Diagram: What The Pipeline Did
 
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d6a4f', 'primaryTextColor': '#d8f3dc', 'primaryBorderColor': '#52b788', 'lineColor': '#74c69d', 'secondaryColor': '#1b4332', 'tertiaryColor': '#40916c', 'edgeLabelBackground': '#1b4332'}}}%%
@@ -227,28 +263,36 @@ sequenceDiagram
     participant asw
     participant CPO
     participant CTO
+    participant HiringManager as Hiring Manager
+    participant RoleWriter as Role Writer
     participant Git
 
     Founder->>asw: asw start --vision vision.md
     asw->>CPO: vision content
-    CPO-->>asw: PRD (Markdown)
+    CPO-->>asw: PRD
     asw->>asw: Lint PRD
-    asw->>Founder: Founder Review Gate (PRD)
+    asw->>Founder: Founder questions and PRD review
     Founder-->>asw: Approve
     asw->>Git: commit prd-generation
     asw->>CTO: vision + PRD
-    CTO-->>asw: architecture.json + diagram
-    asw->>asw: Lint Architecture
-    asw->>Founder: Founder Review Gate (Architecture)
+    CTO-->>asw: architecture JSON + Mermaid
+    asw->>asw: Lint architecture
+    asw->>Founder: Architecture review
     Founder-->>asw: Approve
     asw->>Git: commit architecture-generation
+    asw->>HiringManager: architecture + available standards
+    HiringManager-->>asw: roster JSON
+    asw->>asw: Lint roster
+    asw->>Founder: Roster review
+    Founder-->>asw: Approve
+    asw->>RoleWriter: one call per approved role
+    RoleWriter-->>asw: generated role prompt(s)
+    asw->>Git: commit hiring
     asw-->>Founder: Pipeline complete
 ```
 
----
-
 ## What's Next
 
-- [CLI Reference](../reference/cli.md) — all flags in one place
-- [Key Concepts](../reference/concepts.md) — deeper explanation of every moving part
-- Edit `.company/roles/cpo.md` or `.company/roles/cto.md` to customise agent behaviour for your project
+- [CLI Reference](../reference/cli.md) - all flags in one place
+- [Runs, State, and Recovery](../reference/runs-and-state.md) - resume, restart, and debug behavior
+- [Key Concepts](../reference/concepts.md) - deeper explanation of phases, gates, and generated roles

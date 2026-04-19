@@ -1,18 +1,14 @@
 # CLI Reference
 
-Complete reference for all `asw` commands and flags.
+This page documents the current `asw` command surface, supported flags, examples, and exit behavior.
 
 ## Global Synopsis
 
 ```bash
-asw [-h] <command> [options]
+asw [-h] <command> ...
 ```
 
-Use `asw <command> --help` to print the flags for a specific command. Example: `asw start --help`.
-
-| Flag | Description |
-|------|-------------|
-| `-h`, `--help` | Print help for the current parser and exit. At the top level, use `asw <command> --help` to see subcommand flags. |
+Use `asw <command> --help` to inspect command-specific flags.
 
 ## Commands
 
@@ -21,51 +17,83 @@ Use `asw <command> --help` to print the flags for a specific command. Example: `
 Start the agentic SDLC pipeline from a vision document.
 
 ```bash
-asw start --vision <path> [--workdir <path>]
+asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--restart] [--debug [LOGFILE]]
 ```
 
 #### Flags
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--vision VISION` | Yes | — | Path to the vision Markdown file. Can be relative or absolute. |
-| `--workdir WORKDIR` | No | Current directory | Working directory where `.company/` state is created. |
-| `--no-commit` | No | off | Skip git commits at phase boundaries. Useful for testing or drafts. |
+| `--vision VISION` | Yes | none | Path to the vision Markdown file. Relative and absolute paths both work. |
+| `--workdir WORKDIR` | No | current directory | Working directory where `.company/` is created and git operations run. |
+| `--no-commit` | No | off | Skip git commits at phase boundaries. Also skips the git-repository requirement. |
+| `--restart` | No | off | Delete the existing `.company/` directory before starting the run. |
+| `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. |
 
 #### Examples
 
-Run from the current directory using a vision file in the same folder:
+Run in the current directory using a local vision file:
 
 ```bash
 asw start --vision vision.md
 ```
 
-Point to a vision file and an explicit working directory:
+Run against a separate working directory:
 
 ```bash
 asw start --vision ~/ideas/saas-tool.md --workdir ~/projects/saas-tool
 ```
 
-Run without committing to git — useful for exploring agent output before you are ready to track changes:
+Run without git commits:
 
 ```bash
 asw start --vision vision.md --no-commit
 ```
 
-#### Exit Codes
+Write debug logs to an automatically named file:
+
+```bash
+asw start --vision vision.md --debug
+```
+
+Write debug logs to a specific file:
+
+```bash
+asw start --vision vision.md --debug asw.log
+```
+
+Discard the existing `.company/` state and rebuild from scratch:
+
+```bash
+asw start --vision vision.md --restart
+```
+
+## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | Pipeline completed successfully |
-| `1` | A startup check failed (e.g. vision file not found, workdir missing, not a git repo) |
+| `0` | Pipeline completed successfully, or the Founder stopped the pipeline at a review gate |
+| `1` | Startup validation failed, git commit failed, an artifact failed mechanical linting, or Gemini failed in a non-retryable or exhausted-retry state |
 
-The pipeline also calls `sys.exit(0)` when the Founder chooses **[S]top** at a review gate, and `sys.exit(1)` when an agent fails to produce valid output after all retries are exhausted.
+## Re-Runs And Saved State
+
+`asw` stores pipeline progress in `.company/pipeline_state.json`.
+
+On a later run:
+
+- PRD, architecture, and roster are skipped only if their expected artifacts are still present.
+- Role generation is currently skipped based on saved phase status rather than per-file checks for generated role files.
+- If the vision file changed, `asw` asks whether to continue from the saved state or restart from scratch.
+- `--restart` bypasses saved state by deleting `.company/` before the run begins.
+
+For a full explanation, see [Runs, State, and Recovery](runs-and-state.md).
 
 ## Environment Requirements
 
-- The `gemini` CLI must be installed and on `$PATH` before running any command.
+- `gemini` must be installed and available on `PATH`.
 - `GEMINI_API_KEY` must be exported in the same shell session that runs `asw`.
-- `--workdir` (or the current directory) must be inside a git repository **unless** `--no-commit` is used.
+- Use an interactive terminal because Founder Review Gate actions and question prompts are menu-driven.
+- The working directory must be inside a git repository unless you pass `--no-commit`.
 
 Quick verification:
 
@@ -76,5 +104,6 @@ gemini -p "Reply with OK" -o json
 
 ## See Also
 
-- [Key Concepts](concepts.md) — the pipeline, agents, review gates, and `.company/` directory
-- [Quickstart](../getting-started/quickstart.md) — a practical first-run walkthrough
+- [Quickstart](../getting-started/quickstart.md) - a practical first run
+- [Key Concepts](concepts.md) - phases, review gates, and generated artifacts
+- [Runs, State, and Recovery](runs-and-state.md) - resume, restart, and debug behavior
