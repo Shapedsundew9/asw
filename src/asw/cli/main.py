@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+class LoggingConfigError(RuntimeError):
+    """Raised when debug logging cannot be configured."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip git commits at phase boundaries (useful for testing or drafts).",
     )
     start_parser.add_argument(
+        "--stage-all",
+        action="store_true",
+        default=False,
+        help="Stage the full git worktree during phase commits (default: .company/ only).",
+    )
+    start_parser.add_argument(
         "--restart",
         action="store_true",
         default=False,
@@ -67,6 +78,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_log_path(debug: bool | str) -> Path:
+    """Resolve and validate the debug log path."""
+    if isinstance(debug, str):
+        log_path = Path(debug).expanduser().resolve()
+    else:
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+        log_path = Path.cwd() / f"asw-debug-{stamp}.log"
+
+    if log_path.exists() and log_path.is_dir():
+        msg = f"debug log path is a directory: {log_path}"
+        raise LoggingConfigError(msg)
+
+    parent = log_path.parent
+    if not parent.is_dir():
+        msg = (
+            f"debug log directory does not exist: {parent}\n"
+            "  Create the directory first, or use a file path inside an existing directory."
+        )
+        raise LoggingConfigError(msg)
+
+    if not os.access(parent, os.W_OK):
+        msg = f"debug log directory is not writable: {parent}"
+        raise LoggingConfigError(msg)
+
+    return log_path
+
+
 def _configure_logging(debug: bool | str | None) -> None:
     """Set up the ``asw`` logger hierarchy.
 
@@ -83,13 +121,14 @@ def _configure_logging(debug: bool | str | None) -> None:
 
     root.setLevel(logging.DEBUG)
 
-    if isinstance(debug, str):
-        log_path = Path(debug).resolve()
-    else:
-        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-        log_path = Path.cwd() / f"asw-debug-{stamp}.log"
+    log_path = _resolve_log_path(debug)
 
-    handler = logging.FileHandler(log_path, encoding="utf-8")
+    try:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+    except OSError as exc:
+        msg = f"could not open debug log file: {log_path}\n  {exc}"
+        raise LoggingConfigError(msg) from exc
+
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s"))
     root.addHandler(handler)
@@ -102,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    _configure_logging(args.debug)
+    try:
+        _configure_logging(args.debug)
+    except LoggingConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     vision_path: Path = args.vision.resolve()
     workdir: Path = args.workdir.resolve()
@@ -116,14 +159,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Lazy import to keep CLI startup fast.
-    from asw.orchestrator import run_pipeline
+    from asw.orchestrator import PipelineRunOptions, run_pipeline
+
+    options = PipelineRunOptions(
+        no_commit=args.no_commit,
+        stage_all=args.stage_all,
+        debug=bool(args.debug),
+        restart=args.restart,
+    )
 
     return run_pipeline(
         vision_path=vision_path,
         workdir=workdir,
-        no_commit=args.no_commit,
-        debug=bool(args.debug),
-        restart=args.restart,
+        options=options,
     )
 
 

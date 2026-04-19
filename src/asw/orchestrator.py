@@ -16,6 +16,7 @@ from asw.company import (
     init_company,
     mark_phase_complete,
     read_pipeline_state,
+    write_failed_artifact,
     write_pipeline_state,
 )
 from asw.founder_questions import (
@@ -31,6 +32,7 @@ from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
 from asw.llm.errors import LLMInvocationError
+from asw.pipeline import PipelineExecutionContext, PipelineRunOptions, string_checksum_prefix
 
 _MAX_RETRIES = 2
 _REQUEST_MORE_QUESTIONS_FEEDBACK = (
@@ -39,6 +41,14 @@ _REQUEST_MORE_QUESTIONS_FEEDBACK = (
 )
 
 logger = logging.getLogger("asw.orchestrator")
+
+
+def _agent_company(agent: Agent) -> Path | None:
+    """Infer the company directory for *agent*, if available."""
+    role_file = getattr(agent, "role_file", None)
+    if isinstance(role_file, Path) and role_file.parent.name == "roles":
+        return role_file.parent.parent
+    return None
 
 
 def _safe_join(items: list[str] | str) -> str:
@@ -275,7 +285,13 @@ def _agent_loop(
             print("  → Not retrying automatically to avoid burning additional tokens.")
             sys.exit(1)
 
-        logger.debug("Agent %s raw output (%d chars):\n%s", agent.name, len(output), output)
+        logger.debug(
+            "Agent %s produced %d chars for %s (sha256=%s)",
+            agent.name,
+            len(output),
+            phase_name,
+            string_checksum_prefix(output),
+        )
         print("   Response received.")
 
         errors = lint_fn(output)
@@ -286,6 +302,11 @@ def _agent_loop(
         print(f"   Lint FAILED ({len(errors)} error(s)):")
         for err in errors:
             print(f"     - {err}")
+
+        company = _agent_company(agent)
+        if company is not None:
+            failed_path = write_failed_artifact(company, phase_name, output, errors, attempt=attempt)
+            print(f"   Failed output saved for inspection: {failed_path}")
 
         logger.debug("Agent %s produced mechanically invalid output – failing without retry", agent.name)
         print(f"\nFATAL: {agent.name} produced output that failed mechanical validation.")
@@ -669,6 +690,15 @@ def _run_role_generation(company: Path, architecture_json: str, roster_json: str
     # Load the role template.
     template_path = company / "templates" / "role_template.md"
     role_template = template_path.read_text(encoding="utf-8") if template_path.is_file() else ""
+    if template_path.is_file():
+        logger.debug(
+            "Loaded role template %s (%d chars, sha256=%s)",
+            template_path,
+            len(role_template),
+            string_checksum_prefix(role_template),
+        )
+    else:
+        logger.debug("Role template missing at %s; continuing with empty template", template_path)
 
     total = len(agents_list)
 
@@ -679,6 +709,102 @@ def _run_role_generation(company: Path, architecture_json: str, roster_json: str
         _generate_single_role(entry, company, architecture_json, role_template, llm)
 
     print(f"\n✓ Generated {total} role file(s)")
+
+
+def _expected_role_paths(company: Path, roster_json: str) -> list[Path]:
+    """Return the generated role file paths expected from *roster_json*."""
+    try:
+        data = json.loads(roster_json)
+    except json.JSONDecodeError:
+        logger.warning("Could not parse roster JSON while building expected role paths")
+        return []
+
+    agents = data.get("hired_agents")
+    if not isinstance(agents, list):
+        logger.warning("Roster JSON missing hired_agents while building expected role paths")
+        return []
+
+    paths: list[Path] = []
+    for entry in agents:
+        filename = entry.get("filename") if isinstance(entry, dict) else None
+        if isinstance(filename, str) and filename:
+            paths.append(company / "roles" / filename)
+
+    return paths
+
+
+def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int | None]:
+    """Return PRD content, running the phase only when needed."""
+    prd_path = exec_ctx.company / "artifacts" / "prd.md"
+    if _is_phase_done(exec_ctx.state, "prd", [prd_path]):
+        print("\n↩ Skipping PRD phase (already completed)")
+        return prd_path.read_text(encoding="utf-8"), None
+
+    prd_content = _run_prd_phase(exec_ctx.company, exec_ctx.vision_content, exec_ctx.llm)
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "prd")
+    err = _try_commit(
+        exec_ctx.workdir,
+        "prd-generation",
+        exec_ctx.options.no_commit,
+        stage_all=exec_ctx.options.stage_all,
+    )
+    return prd_content, err
+
+
+def _run_or_skip_architecture_phase(
+    exec_ctx: PipelineExecutionContext,
+    prd_content: str,
+) -> tuple[str, int | None]:
+    """Return architecture JSON, running the phase only when needed."""
+    arch_json_path = exec_ctx.company / "artifacts" / "architecture.json"
+    arch_md_path = exec_ctx.company / "artifacts" / "architecture.md"
+    if _is_phase_done(exec_ctx.state, "architecture", [arch_json_path, arch_md_path]):
+        print("\n↩ Skipping Architecture phase (already completed)")
+        return arch_json_path.read_text(encoding="utf-8"), None
+
+    arch_json = _run_architecture_phase(exec_ctx.company, exec_ctx.vision_content, prd_content, exec_ctx.llm)
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "architecture")
+    err = _try_commit(
+        exec_ctx.workdir,
+        "architecture-generation",
+        exec_ctx.options.no_commit,
+        stage_all=exec_ctx.options.stage_all,
+    )
+    return arch_json, err
+
+
+def _run_or_skip_roster_phase(exec_ctx: PipelineExecutionContext, arch_json: str) -> str:
+    """Return roster JSON, running the phase only when needed."""
+    roster_json_path = exec_ctx.company / "artifacts" / "roster.json"
+    roster_md_path = exec_ctx.company / "artifacts" / "roster.md"
+    if _is_phase_done(exec_ctx.state, "roster", [roster_json_path, roster_md_path]):
+        print("\n↩ Skipping Roster phase (already completed)")
+        return roster_json_path.read_text(encoding="utf-8")
+
+    roster_json = _run_roster_phase(exec_ctx.company, arch_json, exec_ctx.llm)
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "roster")
+    return roster_json
+
+
+def _run_or_skip_role_generation_phase(
+    exec_ctx: PipelineExecutionContext,
+    arch_json: str,
+    roster_json: str,
+) -> int | None:
+    """Run role generation when needed and validate expected files."""
+    role_paths = _expected_role_paths(exec_ctx.company, roster_json)
+    if role_paths and _is_phase_done(exec_ctx.state, "roles", role_paths):
+        print("\n↩ Skipping Role Generation phase (already completed)")
+        return None
+
+    _run_role_generation(exec_ctx.company, arch_json, roster_json, exec_ctx.llm)
+    role_paths = _expected_role_paths(exec_ctx.company, roster_json)
+    if not role_paths or not all(path.is_file() for path in role_paths):
+        print("\nError: role generation completed without writing all expected role files.", file=sys.stderr)
+        return 1
+
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, "roles")
+    return None
 
 
 def _is_phase_done(state: dict | None, phase: str, artifact_paths: list[Path]) -> bool:
@@ -708,13 +834,13 @@ def _prompt_vision_changed() -> str:
         print("   Please enter 'C' to continue or 'R' to restart.")
 
 
-def _try_commit(workdir: Path, phase_name: str, no_commit: bool) -> int | None:
+def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: bool) -> int | None:
     """Attempt a git commit.  Returns an error code on failure, else *None*."""
     if no_commit:
         print("  (skipping git commit – --no-commit)")
         return None
     try:
-        commit_state(workdir, phase_name)
+        commit_state(workdir, phase_name, stage_all=stage_all)
     except GitError as exc:
         print(f"\nError committing {phase_name}: {exc}", file=sys.stderr)
         return 1
@@ -749,63 +875,30 @@ def _init_pipeline_state(workdir: Path, vision_path: Path) -> tuple[dict, Path]:
     return state, company
 
 
-def _run_phases(
-    state: dict,
-    company: Path,
-    vision_content: str,
-    llm: LLMBackend,
-    *,
-    no_commit: bool,
-) -> int:
+def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
     """Execute or skip each pipeline phase based on *state*.
 
     Returns 0 on success, non-zero on error.
     """
-    workdir = company.parent
-    # ── Phase A: CPO → PRD ───────────────────────────────────────────────
-    prd_path = company / "artifacts" / "prd.md"
-    if _is_phase_done(state, "prd", [prd_path]):
-        prd_content = prd_path.read_text(encoding="utf-8")
-        print("\n↩ Skipping PRD phase (already completed)")
-    else:
-        prd_content = _run_prd_phase(company, vision_content, llm)
-        mark_phase_complete(workdir, state, "prd")
-        err = _try_commit(workdir, "prd-generation", no_commit)
-        if err is not None:
-            return err
+    prd_content, err = _run_or_skip_prd_phase(exec_ctx)
+    if err is not None:
+        return err
 
-    # ── Phase B: CTO → Architecture ──────────────────────────────────────
-    arch_json_path = company / "artifacts" / "architecture.json"
-    arch_md_path = company / "artifacts" / "architecture.md"
-    if _is_phase_done(state, "architecture", [arch_json_path, arch_md_path]):
-        arch_json = arch_json_path.read_text(encoding="utf-8")
-        print("\n↩ Skipping Architecture phase (already completed)")
-    else:
-        arch_json = _run_architecture_phase(company, vision_content, prd_content, llm)
-        mark_phase_complete(workdir, state, "architecture")
-        err = _try_commit(workdir, "architecture-generation", no_commit)
-        if err is not None:
-            return err
+    arch_json, err = _run_or_skip_architecture_phase(exec_ctx, prd_content)
+    if err is not None:
+        return err
 
-    # ── Phase C1: Hiring Manager → Roster ────────────────────────────────
-    roster_json_path = company / "artifacts" / "roster.json"
-    roster_md_path = company / "artifacts" / "roster.md"
-    if _is_phase_done(state, "roster", [roster_json_path, roster_md_path]):
-        roster_json = roster_json_path.read_text(encoding="utf-8")
-        print("\n↩ Skipping Roster phase (already completed)")
-    else:
-        roster_json = _run_roster_phase(company, arch_json, llm)
-        mark_phase_complete(workdir, state, "roster")
+    roster_json = _run_or_skip_roster_phase(exec_ctx, arch_json)
+    err = _run_or_skip_role_generation_phase(exec_ctx, arch_json, roster_json)
+    if err is not None:
+        return err
 
-    # ── Phase C2: Role Writer → Role files ───────────────────────────────
-    if _is_phase_done(state, "roles", []):
-        print("\n↩ Skipping Role Generation phase (already completed)")
-    else:
-        _run_role_generation(company, arch_json, roster_json, llm)
-        mark_phase_complete(workdir, state, "roles")
-
-    # Commit hiring phases together.
-    err = _try_commit(workdir, "hiring", no_commit)
+    err = _try_commit(
+        exec_ctx.workdir,
+        "hiring",
+        exec_ctx.options.no_commit,
+        stage_all=exec_ctx.options.stage_all,
+    )
     if err is not None:
         return err
 
@@ -816,28 +909,28 @@ def run_pipeline(
     *,
     vision_path: Path,
     workdir: Path,
-    no_commit: bool = False,
-    debug: bool = False,
-    restart: bool = False,
+    options: PipelineRunOptions | None = None,
 ) -> int:
     """Execute the full V0.2 SDLC pipeline.
 
     Returns 0 on success.
     """
+    options = options or PipelineRunOptions()
     logger.debug(
-        "run_pipeline called: vision_path=%s workdir=%s no_commit=%s debug=%s restart=%s",
+        "run_pipeline called: vision_path=%s workdir=%s no_commit=%s stage_all=%s debug=%s restart=%s",
         vision_path,
         workdir,
-        no_commit,
-        debug,
-        restart,
+        options.no_commit,
+        options.stage_all,
+        options.debug,
+        options.restart,
     )
     print("=" * 72)
     print("  AgenticOrg CLI – V0.2 Pipeline")
     print("=" * 72)
 
     # 0. Validate git repo early (unless commits are disabled).
-    if not no_commit and not is_git_repo(workdir):
+    if not options.no_commit and not is_git_repo(workdir):
         print(f"\nError: {workdir} is not inside a git repository.", file=sys.stderr)
         print(
             "  Run: git init && git commit --allow-empty -m 'Initial commit'",
@@ -850,13 +943,18 @@ def run_pipeline(
         return 1
 
     # 0b. Handle --restart: wipe .company/ before anything else.
-    if restart:
+    if options.restart:
         clear_company(workdir)
         print("\n✓ Restart: .company/ directory removed.")
 
     # 1. Read vision.
     vision_content = vision_path.read_text(encoding="utf-8")
-    logger.debug("Vision content (%d chars):\n%s", len(vision_content), vision_content)
+    logger.debug(
+        "Vision loaded from %s (%d chars, sha256=%s)",
+        vision_path,
+        len(vision_content),
+        string_checksum_prefix(vision_content),
+    )
     print(f"✓ Vision loaded: {vision_path.name} ({len(vision_content)} chars)")
 
     # 2. Get LLM backend.
@@ -868,7 +966,14 @@ def run_pipeline(
     state, company = _init_pipeline_state(workdir, vision_path)
 
     # 4. Execute phases.
-    result = _run_phases(state, company, vision_content, llm, no_commit=no_commit)
+    exec_ctx = PipelineExecutionContext(
+        state=state,
+        company=company,
+        vision_content=vision_content,
+        llm=llm,
+        options=options,
+    )
+    result = _run_phases(exec_ctx)
     if result != 0:
         return result
 

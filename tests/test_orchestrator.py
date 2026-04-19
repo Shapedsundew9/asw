@@ -12,7 +12,13 @@ import pytest
 from asw.company import hash_file, init_company, write_pipeline_state
 from asw.gates import FounderReviewResult
 from asw.llm.errors import LLMInvocationError, TransientLLMError
-from asw.orchestrator import _agent_loop, _is_phase_done, _render_architecture_markdown, run_pipeline
+from asw.orchestrator import (
+    PipelineRunOptions,
+    _agent_loop,
+    _is_phase_done,
+    _render_architecture_markdown,
+    run_pipeline,
+)
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -84,6 +90,28 @@ def test_agent_loop_fails_fast_on_lint_errors() -> None:
 
     mock_exit.assert_called_once_with(1)
     assert agent.run.call_count == 1
+
+
+def test_agent_loop_fails_fast_on_lint_errors_and_saves_failed_artifact(tmp_path: Path) -> None:
+    """Lint failures should be written to .company/artifacts/failed/ for inspection."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(return_value="invalid output")
+    company = init_company(tmp_path)
+    agent.role_file = company / "roles" / "cpo.md"
+
+    with (
+        patch("asw.orchestrator.sys.exit", side_effect=SystemExit(1)) as mock_exit,
+        pytest.raises(SystemExit),
+    ):
+        _agent_loop(agent, {"vision": "demo"}, lambda _: ["Missing section"], "PRD")
+
+    mock_exit.assert_called_once_with(1)
+    failed_files = list((company / "artifacts" / "failed").glob("prd_attempt1_*.md"))
+    assert len(failed_files) == 1
+    content = failed_files[0].read_text(encoding="utf-8")
+    assert "Missing section" in content
+    assert "invalid output" in content
 
 
 # ── Canned LLM responses ────────────────────────────────────────────────
@@ -606,6 +634,40 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
     assert (company / "artifacts" / "prd.md").is_file()
 
 
+def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
+    """If a generated role file is missing, role generation should rerun."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+
+    company = init_company(tmp_path)
+    (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
+    (company / "artifacts" / "architecture.json").write_text(json.dumps({"project_name": "test"}), encoding="utf-8")
+    (company / "artifacts" / "architecture.md").write_text("# Arch", encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(_CANNED_ROSTER.split("```json\n")[1].split("\n```")[0])
+    (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
+    state = {
+        "version": "0.2",
+        "vision_sha256": hash_file(vision),
+        "completed_phases": {
+            "prd": {"timestamp": "2026-01-01T00:00:00Z"},
+            "architecture": {"timestamp": "2026-01-01T00:00:00Z"},
+            "roster": {"timestamp": "2026-01-01T00:00:00Z"},
+            "roles": {"timestamp": "2026-01-01T00:00:00Z"},
+        },
+    }
+    write_pipeline_state(tmp_path, state)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(return_value=_CANNED_ROLE)
+
+    with patch("asw.orchestrator.get_backend", return_value=mock_llm):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(no_commit=True))
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 1
+    assert (company / "roles" / "python_backend_developer.md").is_file()
+
+
 def test_restart_flag_wipes_company(tmp_path: Path) -> None:
     """--restart deletes .company/ and runs all phases fresh."""
     vision = tmp_path / "vision.md"
@@ -632,7 +694,7 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
     ):
-        result = run_pipeline(vision_path=vision, workdir=tmp_path, restart=True)
+        result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(restart=True))
 
     assert result == 0
     # All 4 LLM calls should have been made (no skipping).

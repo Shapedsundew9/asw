@@ -114,6 +114,8 @@ Examples of lint checks:
 
 If linting fails, `asw` exits. This is intentional: the invalid output already exists, so resubmitting the same run automatically would burn more tokens without any Founder intervention.
 
+Before exiting, `asw` saves the rejected output and validation errors under `.company/artifacts/failed/` so you can inspect the bad artifact without relying on debug logs alone.
+
 Automatic retries are reserved for transient Gemini problems such as timeouts, rate limits, busy responses, or temporary service failures.
 
 ## The `.company/` Directory
@@ -143,7 +145,7 @@ If you have an older `.company/state/` directory from earlier runs, `asw` migrat
 
 ## Git Commits
 
-When commits are enabled, `asw` stages `.company/` and `src/` if `src/` exists under the working directory. Successful runs typically create these commits:
+When commits are enabled, `asw` stages `.company/` by default. If you pass `--stage-all`, it stages the full git worktree before creating the phase commit. Successful runs typically create these commits:
 
 ```text
 [asw] Phase: prd-generation completed
@@ -155,15 +157,17 @@ If there is nothing new to commit for a phase, `asw` prints a message and contin
 
 Pass `--no-commit` to skip all git operations and the git-repository requirement.
 
+Pass `--stage-all` when you explicitly want the phase commits to include changes outside `.company/`.
+
 ## Resume, Restart, And Debug Logs
 
 Rerunning `asw start` usually resumes from saved state rather than starting over.
 
 - PRD, architecture, and roster are skipped only when their expected artifacts still exist.
-- Role generation currently resumes from saved phase status rather than per-file checks for generated role files.
+- Role generation is skipped only when the generated role files expected by the approved roster still exist.
 - If the vision file changed, `asw` asks whether to continue or restart.
 - `--restart` forces a clean rebuild of `.company/`.
-- `--debug` writes detailed logs to a file for troubleshooting.
+- `--debug` writes detailed logs to a file for troubleshooting. If you pass a custom log path, its parent directory must already exist.
 
 See [Runs, State, and Recovery](runs-and-state.md) for the full behavior.
 

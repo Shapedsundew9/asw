@@ -38,8 +38,14 @@ def is_git_repo(workdir: Path) -> bool:
     return True
 
 
-def commit_state(workdir: Path, phase_name: str) -> str:
-    """Stage ``.company/`` and ``src/`` and create a commit.
+def repo_root(workdir: Path) -> Path:
+    """Return the top-level git repository path for *workdir*."""
+    result = _run_git(workdir, "rev-parse", "--show-toplevel")
+    return Path(result.stdout.strip())
+
+
+def commit_state(workdir: Path, phase_name: str, *, stage_all: bool = False) -> str:
+    """Stage ``.company/`` or the full repo and create a commit.
 
     Returns the commit hash.
     """
@@ -47,9 +53,11 @@ def commit_state(workdir: Path, phase_name: str) -> str:
         msg = f"Not a git repository: {workdir}"
         raise GitError(msg)
 
-    _run_git(workdir, "add", ".company/")
-    if (workdir / "src").is_dir():
-        _run_git(workdir, "add", "src/")
+    if stage_all:
+        root = repo_root(workdir)
+        _run_git(root, "add", "--all")
+    else:
+        _run_git(workdir, "add", ".company/")
 
     message = f"[asw] Phase: {phase_name} completed"
 

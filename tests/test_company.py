@@ -6,12 +6,14 @@ from pathlib import Path
 
 from asw.company import (
     COMPANY_DIR,
+    FAILED_ARTIFACTS_DIR,
     SUBDIRS,
     clear_company,
     hash_file,
     init_company,
     mark_phase_complete,
     read_pipeline_state,
+    write_failed_artifact,
     write_pipeline_state,
 )
 
@@ -153,3 +155,25 @@ def test_clear_company(tmp_path: Path) -> None:
 def test_clear_company_noop_if_missing(tmp_path: Path) -> None:
     """clear_company does nothing if .company/ doesn't exist."""
     clear_company(tmp_path)  # Should not raise.
+
+
+def test_write_failed_artifact_persists_output_and_errors(tmp_path: Path) -> None:
+    """Failed artifacts should be saved under .company/artifacts/failed/."""
+    company = init_company(tmp_path)
+
+    failed_path = write_failed_artifact(
+        company,
+        "PRD",
+        "bad output",
+        ["Missing section", "Bad checklist"],
+        attempt=2,
+    )
+
+    assert failed_path.is_file()
+    assert failed_path.parent == company / "artifacts" / FAILED_ARTIFACTS_DIR
+    content = failed_path.read_text(encoding="utf-8")
+    assert "# Failed PRD Output" in content
+    assert "- Attempt: 2" in content
+    assert "- Missing section" in content
+    assert "- Bad checklist" in content
+    assert "bad output" in content

@@ -45,7 +45,7 @@ In practice this means:
 
 - If PRD, architecture, and roster artifacts still exist, those completed phases can be skipped on a later run.
 - For PRD, architecture, and roster, if a phase is marked complete but one of its required artifacts is missing, `asw` reruns that phase and the phases after it.
-- Role generation is currently resumed from saved phase state rather than per-file checks for generated role files.
+- Role generation is skipped only if the generated role files implied by the approved roster still exist on disk.
 - Resume works even when you used `--no-commit`; saved state is separate from git.
 
 ## What Happens When The Vision Changes
@@ -87,7 +87,8 @@ Examples:
 
 - If PRD and architecture were already approved, the rerun starts at the roster phase.
 - If `roster.json` was deleted after a previous run, the roster phase runs again.
-- If all reviewable artifacts still exist and role generation is already marked complete, the rerun quickly skips everything.
+- If a generated role file was deleted after a previous run, the roles phase runs again.
+- If all reviewable artifacts and expected generated role files still exist, the rerun quickly skips everything.
 
 ## Create Debug Logs
 
@@ -113,12 +114,14 @@ Debug logs are useful when:
 - A generated artifact fails mechanical linting.
 - You want a record of the raw artifact text and phase transitions.
 
+The debug log now keeps one canonical combined prompt entry per Gemini invocation rather than repeating the same role and prompt content across multiple logging layers.
+
 If you omit the log path, `asw` creates a file named like `asw-debug-YYYYMMDD-HHMMSS.log` in the directory where you ran the command.
 
 ## Recovery Tips
 
 - If a run fails on a missing git repository, either initialize git or rerun with `--no-commit`.
-- If a generated artifact is structurally invalid, update the vision or your custom role/template files and rerun.
+- If a generated artifact is structurally invalid, inspect the saved file under `.company/artifacts/failed/`, then update the vision or your custom role/template files and rerun.
 - If the saved artifacts look stale after major edits, use `--restart` instead of trying to repair the state manually.
 - If you need to inspect what happened before the failure, rerun with `--debug` and keep the log file.
 

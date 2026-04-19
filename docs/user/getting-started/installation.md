@@ -104,7 +104,7 @@ Inspect the `start` command flags:
 asw start --help
 ```
 
-You should see `--vision`, `--workdir`, `--no-commit`, `--restart`, and `--debug [LOGFILE]`.
+You should see `--vision`, `--workdir`, `--no-commit`, `--stage-all`, `--restart`, and `--debug [LOGFILE]`.
 
 ## Git Requirement For Working Directories
 
@@ -118,6 +118,8 @@ git commit --allow-empty -m "Initial commit"
 ```
 
 If you only want to experiment, you can skip git entirely and run with `--no-commit`.
+
+If you want phase commits to include changes outside `.company/`, add `--stage-all` when you run the pipeline.
 
 ## What's Next
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 from datetime import datetime, timezone
 from importlib import resources
@@ -15,6 +16,7 @@ logger = logging.getLogger("asw.company")
 COMPANY_DIR = ".company"
 SUBDIRS = ("roles", "artifacts", "memory", "templates", "standards")
 PIPELINE_STATE_FILE = "pipeline_state.json"
+FAILED_ARTIFACTS_DIR = "failed"
 
 
 def _package_dir(name: str) -> Path:
@@ -96,6 +98,49 @@ def write_pipeline_state(workdir: Path, state: dict) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     logger.debug("Pipeline state written: %s", state_path)
+
+
+def write_failed_artifact(
+    company: Path,
+    phase_name: str,
+    raw_output: str,
+    errors: list[str],
+    *,
+    attempt: int,
+) -> Path:
+    """Persist a mechanically invalid artifact for later inspection."""
+    failed_dir = company / "artifacts" / FAILED_ARTIFACTS_DIR
+    failed_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = re.sub(r"[^a-z0-9]+", "_", phase_name.lower()).strip("_") or "phase"
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    failed_path = failed_dir / f"{slug}_attempt{attempt}_{stamp}.md"
+
+    lines = [
+        f"# Failed {phase_name} Output",
+        "",
+        f"- Attempt: {attempt}",
+        f"- Saved At: {datetime.now(tz=timezone.utc).isoformat()}",
+        "",
+        "## Validation Errors",
+        "",
+    ]
+    lines.extend(f"- {err}" for err in errors)
+    lines.extend(
+        [
+            "",
+            "## Raw LLM Output",
+            "",
+            "```text",
+            raw_output,
+            "```",
+            "",
+        ]
+    )
+
+    failed_path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Failed artifact written: %s", failed_path)
+    return failed_path
 
 
 def mark_phase_complete(workdir: Path, state: dict, phase: str) -> dict:

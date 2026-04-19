@@ -1,5 +1,70 @@
 # ASW-CORE-002 Change Log
 
+## Branch Summary
+
+- Expands the pipeline from a two-phase PRD and architecture flow into a resumable multi-phase workflow with Founder-safe question handling and a hiring phase.
+- Introduces the `.company/` corporate-memory layout, reusable templates and standards, and generated role prompts for implementation specialists.
+- Refreshes end-user documentation for installation, quickstart, CLI behavior, concepts, and pipeline state and recovery.
+
+## Delivery Overview
+
+```mermaid
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'background': '#0f1720',
+    'primaryColor': '#18303b',
+    'primaryTextColor': '#d9e4eb',
+    'primaryBorderColor': '#608090',
+    'secondaryColor': '#132630',
+    'tertiaryColor': '#101d25',
+    'lineColor': '#7ca6b5',
+    'clusterBkg': '#132630',
+    'clusterBorder': '#4f6c7a'
+  }
+}}%%
+flowchart LR
+    vision[Vision File] --> prd[Phase A: PRD]
+    prd --> prd_gate{Founder Gate}
+    prd_gate -->|approve| arch[Phase B: Architecture]
+    prd_gate -->|answer locally| prd_answers[Update structured answers in-place]
+    prd_answers --> prd_gate
+    arch --> arch_gate{Founder Gate}
+    arch_gate -->|approve| roster[Phase C1: Roster]
+    arch_gate -->|request rerun| arch
+    roster --> roster_gate{Founder Gate}
+    roster_gate -->|approve| role_writer[Phase C2: Role Generation]
+    role_writer --> docs[Updated docs and CLI guidance]
+    state[(pipeline_state.json)] -. checkpoints .-> prd
+    state -. resume / restart .-> arch
+    state -. resume / restart .-> roster
+    state -. resume / restart .-> role_writer
+
+    %% Founder answers can now be captured without forcing a full agent rerun.
+```
+
+## Corporate Memory & Hiring Pipeline
+
+### Added
+
+- **`.company/` operating model expansion** — the workspace now carries `memory/`, `templates/`, and `standards/` directories alongside roles and artifacts, giving agents editable local context instead of relying on hidden state.
+- **Bundled standards and templates** — Python and UI standards plus PRD, architecture, and role templates are copied into the working company so the Founder can refine them between runs.
+- **Hiring pipeline roles** — `hiring_manager.md` and `role_writer.md` add a new roster-planning phase and per-role prompt generation after architecture approval.
+- **Roster artifacts** — `roster.json` and `roster.md` are generated and mechanically linted before Founder approval.
+- **Generated implementation roles** — approved roster entries are transformed into concrete specialist role files under `.company/roles/`.
+
+### Changed
+
+- `init_company()` now migrates legacy `.company/state/` directories into `.company/memory/` so older runs remain usable.
+- `run_pipeline()` now extends past architecture approval into roster planning and role generation, preserving architecture outputs as upstream context.
+- `Agent.run()` now supports appended standards content so organizational rules are injected consistently at the system-prompt layer.
+- Architecture rendering and downstream artifact handling were tightened so generated markdown stays aligned with the machine-readable artifacts that drive later phases.
+
+### Tests
+
+- `test_hiring.py` covers roster linting, roster rendering, role linting, standards assignment, and role-generation flows.
+- `test_orchestrator.py` covers the end-to-end hiring phase sequencing and artifact persistence behaviors.
+
 ## Founder Question Flow & Retry Safety
 
 ### Added
@@ -50,3 +115,16 @@
 
 - `test_company.py` — 8 new tests for `hash_file`, `read_pipeline_state`, `write_pipeline_state`, `mark_phase_complete`, `clear_company`.
 - `test_orchestrator.py` — 8 new tests: `_is_phase_done` unit tests, resume skipping, missing-artifact re-run, `--restart` flag, vision-changed continue/restart flows.
+
+## Documentation & Validation
+
+### Changed
+
+- User documentation was rewritten across installation, quickstart, CLI reference, concepts, runs-and-state, and the first-project tutorial to reflect the current Founder workflow and recovery model.
+- CLI help output now includes clearer command-specific guidance and better coverage of the `start` command flags.
+- `scripts/lint-python.sh` now resolves `pylint` and `mypy` through the repository `.venv` when present so `check-all.sh` runs against the same environment as `pytest`.
+
+### Tests
+
+- `test_cli.py` adds coverage for help output parsing and command guidance regressions.
+- `test_logging.py` validates the logging-path behavior that supports the more explicit CLI and recovery flow.

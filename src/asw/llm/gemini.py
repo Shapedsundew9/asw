@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -12,6 +13,11 @@ from asw.llm.errors import LLMInvocationError, TransientLLMError
 logger = logging.getLogger("asw.llm.gemini")
 
 _DEFAULT_TIMEOUT = 300  # seconds
+
+
+def _checksum_prefix(content: str) -> str:
+    """Return a short checksum prefix for log correlation."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
 
 
 class GeminiCLIBackend:
@@ -37,8 +43,9 @@ class GeminiCLIBackend:
 
         logger.debug("Gemini CLI command: %s", cmd[:2] + ["<prompt>"] + cmd[3:])
         logger.debug(
-            "Gemini CLI combined prompt (%d chars):\n%s",
+            "Gemini CLI combined prompt (%d chars, sha256=%s):\n%s",
             len(combined_prompt),
+            _checksum_prefix(combined_prompt),
             combined_prompt,
         )
         logger.debug("Timeout: %d seconds, model: %s", self._timeout, self._model or "(default)")
@@ -59,7 +66,11 @@ class GeminiCLIBackend:
         logger.debug("Gemini CLI exit code: %d", result.returncode)
         if result.stderr:
             logger.debug("Gemini CLI stderr:\n%s", result.stderr)
-        logger.debug("Gemini CLI raw stdout (%d chars):\n%s", len(result.stdout), result.stdout)
+        logger.debug(
+            "Gemini CLI raw stdout (%d chars, sha256=%s)",
+            len(result.stdout),
+            _checksum_prefix(result.stdout),
+        )
 
         if result.returncode != 0:
             msg = f"Gemini CLI exited with code {result.returncode}:\n{result.stderr.strip()}"
@@ -70,7 +81,12 @@ class GeminiCLIBackend:
             raise LLMInvocationError(msg, reason="non-transient-cli-error")
 
         extracted = self.extract_text(result.stdout)
-        logger.debug("Gemini extracted response (%d chars):\n%s", len(extracted), extracted)
+        logger.debug(
+            "Gemini extracted response (%d chars, sha256=%s):\n%s",
+            len(extracted),
+            _checksum_prefix(extracted),
+            extracted,
+        )
         return extracted
 
     @staticmethod

@@ -160,9 +160,11 @@ If you did not use `--no-commit`, your git history will usually contain three au
 [asw] Phase: hiring completed
 ```
 
+By default those commits stage only `.company/`. If you explicitly want the phase commits to include the rest of the repository worktree, rerun with `--stage-all`.
+
 ## If You Run It Again
 
-Rerunning the same command resumes from saved state. If completed artifacts are still present, `asw` skips those phases. If the vision file changed, `asw` asks whether to continue or restart from scratch.
+Rerunning the same command resumes from saved state. If completed artifacts are still present, `asw` skips those phases, including generated roles when the expected role files from the approved roster still exist. If the vision file changed, `asw` asks whether to continue or restart from scratch.
 
 Use `--restart` when you want to discard the existing `.company/` directory and rebuild it from scratch.
 
@@ -176,6 +178,8 @@ If you see an error about `GEMINI_API_KEY`:
 4. Rerun `asw start --vision vision.md --no-commit`.
 
 If you want more detail about what happened during a failed run, rerun with `--debug`.
+
+If a generated artifact fails structural validation, `asw` saves the rejected output under `.company/artifacts/failed/` before exiting so you can inspect what went wrong.
 
 ## What's Next
 

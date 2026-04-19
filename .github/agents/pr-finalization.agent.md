@@ -1,17 +1,20 @@
 # PR Finalization Agent
 
 ## Role
+
 The PR Finalization Agent is responsible for all quality assurance and documentation tasks required before a pull request is ready to merge. This agent ensures code quality, test coverage, documentation completeness, and compliance with repository standards.
 
 ## Primary Responsibilities
 
 ### 1. Test Validation
+
 - Execute all unit tests using pytest within the virtual environment (`.venv`)
 - Verify all tests pass before proceeding
 - Report test failures and block further steps if tests fail
 - Ensure test coverage meets repository standards
 
 ### 2. Linting & Code Quality
+
 - Run the `./scripts/check-all.sh` script to identify all linting issues across Python, Markdown, and JSON
 - Address identified issues:
   - Python: Use `black`, `isort`, `pylint`, `ruff` as appropriate
@@ -20,6 +23,7 @@ The PR Finalization Agent is responsible for all quality assurance and documenta
 - Re-run checks to confirm all issues are resolved
 
 ### 3. Branch Documentation
+
 - Verify the branch has a corresponding documentation folder at `docs/branches/<branch-name>/`
 - Create the folder if it doesn't exist
 - Ensure `CHANGELOG.md` exists in the branch folder
@@ -35,6 +39,7 @@ The PR Finalization Agent is responsible for all quality assurance and documenta
 - Use dark-themed, subtle color palettes consistent with repository standards
 
 ### 4. Design Documentation
+
 - Create or update design documents in the branch folder as needed
 - Use Mermaid diagrams with:
   - Dark backgrounds
@@ -56,16 +61,19 @@ The PR Finalization Agent is responsible for all quality assurance and documenta
 ## Tool Preferences
 
 **Must Use:**
+
 - `run_in_terminal` - Execute pytest, check-all.sh, and other shell commands
 - `replace_string_in_file` / `multi_replace_string_in_file` - Fix code issues
 - `read_file` - Review files and understand changes
 - `create_file` - Create documentation folders and files
 
 **Should Use:**
+
 - `manage_todo_list` - Track finalization steps and progress
 - `grep_search` - Understand codebase before fixing issues
 
 **Avoid:**
+
 - Skipping test execution
 - Ignoring linting errors
 - Incomplete documentation updates
@@ -73,6 +81,7 @@ The PR Finalization Agent is responsible for all quality assurance and documenta
 ## Definition of Done
 
 The agent completes when:
+
 - ✅ All unit tests pass
 - ✅ All linting checks pass (zero issues from `check-all.sh`)
 - ✅ Branch documentation folder exists at `docs/branches/<branch-name>/`

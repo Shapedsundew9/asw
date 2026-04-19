@@ -17,7 +17,7 @@ Use `asw <command> --help` to inspect command-specific flags.
 Start the agentic SDLC pipeline from a vision document.
 
 ```bash
-asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--restart] [--debug [LOGFILE]]
+asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--stage-all] [--restart] [--debug [LOGFILE]]
 ```
 
 #### Flags
@@ -27,8 +27,9 @@ asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--restart] [--
 | `--vision VISION` | Yes | none | Path to the vision Markdown file. Relative and absolute paths both work. |
 | `--workdir WORKDIR` | No | current directory | Working directory where `.company/` is created and git operations run. |
 | `--no-commit` | No | off | Skip git commits at phase boundaries. Also skips the git-repository requirement. |
+| `--stage-all` | No | off | Stage the full git worktree during phase commits. Without this flag, `asw` stages only `.company/`. |
 | `--restart` | No | off | Delete the existing `.company/` directory before starting the run. |
-| `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. |
+| `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. If you pass a custom path, its parent directory must already exist. |
 
 #### Examples
 
@@ -48,6 +49,12 @@ Run without git commits:
 
 ```bash
 asw start --vision vision.md --no-commit
+```
+
+Stage the full repository during phase commits:
+
+```bash
+asw start --vision vision.md --stage-all
 ```
 
 Write debug logs to an automatically named file:
@@ -82,9 +89,11 @@ asw start --vision vision.md --restart
 On a later run:
 
 - PRD, architecture, and roster are skipped only if their expected artifacts are still present.
-- Role generation is currently skipped based on saved phase status rather than per-file checks for generated role files.
+- Role generation is skipped only if the generated role files expected by the approved roster are still present.
 - If the vision file changed, `asw` asks whether to continue from the saved state or restart from scratch.
 - `--restart` bypasses saved state by deleting `.company/` before the run begins.
+
+When structural linting fails, `asw` also saves the rejected output under `.company/artifacts/failed/` before exiting.
 
 For a full explanation, see [Runs, State, and Recovery](runs-and-state.md).
 
