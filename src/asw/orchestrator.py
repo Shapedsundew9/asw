@@ -161,8 +161,21 @@ def _lint_prd(content: str) -> list[str]:
 
 def _extract_json_block(content: str) -> str | None:
     """Extract the first fenced JSON code block from *content*."""
-    match = re.search(r"```json\s*\n(.*?)```", content, re.DOTALL)
+    match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
     return match.group(1).strip() if match else None
+
+
+def _extract_founder_questions(content: str) -> list[dict] | None:
+    """Find the first JSON block that contains a 'founder_questions' key and return its value."""
+    blocks = re.findall(r"```json\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
+    for block in blocks:
+        try:
+            data = json.loads(block)
+            if isinstance(data, dict) and "founder_questions" in data:
+                return data["founder_questions"]
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def _extract_mermaid_block(content: str) -> str | None:
@@ -395,7 +408,8 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
     prd_path.write_text(prd_content, encoding="utf-8")
     print(f"\n✓ PRD written: {prd_path}")
 
-    choice, feedback = founder_review("PRD", prd_path)
+    questions = _extract_founder_questions(prd_content)
+    choice, feedback = founder_review("PRD", prd_path, questions=questions)
     while choice in ("r", "m"):
         founder_feedback = feedback if choice == "m" else None
         prd_content = _agent_loop(
@@ -406,7 +420,8 @@ def _run_prd_phase(company: Path, vision_content: str, llm: LLMBackend) -> str:
             founder_feedback=founder_feedback,
         )
         prd_path.write_text(prd_content, encoding="utf-8")
-        choice, feedback = founder_review("PRD", prd_path)
+        questions = _extract_founder_questions(prd_content)
+        choice, feedback = founder_review("PRD", prd_path, questions=questions)
     return prd_content
 
 
@@ -427,7 +442,8 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
     _write_architecture(raw_arch, company)
 
     arch_md_path = company / "artifacts" / "architecture.md"
-    choice, feedback = founder_review("Architecture", arch_md_path)
+    questions = _extract_founder_questions(raw_arch)
+    choice, feedback = founder_review("Architecture", arch_md_path, questions=questions)
     while choice in ("r", "m"):
         founder_feedback = feedback if choice == "m" else None
         raw_arch = _agent_loop(
@@ -438,7 +454,8 @@ def _run_architecture_phase(company: Path, vision_content: str, prd_content: str
             founder_feedback=founder_feedback,
         )
         _write_architecture(raw_arch, company)
-        choice, feedback = founder_review("Architecture", arch_md_path)
+        questions = _extract_founder_questions(raw_arch)
+        choice, feedback = founder_review("Architecture", arch_md_path, questions=questions)
 
     # Return the architecture JSON for downstream phases.
     arch_json_path = company / "artifacts" / "architecture.json"
@@ -489,9 +506,10 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
     _write_roster(json_block, company)
 
     roster_md_path = company / "artifacts" / "roster.md"
-    choice, feedback = founder_review("Roster", roster_md_path)
+    questions = _extract_founder_questions(raw_roster)
+    choice, feedback = founder_review("Roster", roster_md_path, questions=questions)
     while choice in ("r", "m"):
-        if choice == "m" and feedback:
+        if choice == "m" and feedback and feedback.strip().startswith("{"):
             # Founder is directly editing the roster JSON.
             edit_errors = _lint_roster(f"```json\n{feedback}\n```", standards_dir=standards_dir)
             if edit_errors:
@@ -505,17 +523,20 @@ def _run_roster_phase(company: Path, architecture_json: str, llm: LLMBackend) ->
             _write_roster(json_block, company)
             choice, feedback = founder_review("Roster", roster_md_path)
         else:
-            # Reject: re-run from scratch.
+            # Reject OR Modify with non-JSON feedback: re-run agent.
+            founder_feedback = feedback if choice == "m" else None
             raw_roster = _agent_loop(
                 hm,
                 context,
                 lambda c: _lint_roster(c, standards_dir=standards_dir),
                 "Roster",
+                founder_feedback=founder_feedback,
             )
             json_block = _extract_json_block(raw_roster)
             assert json_block is not None  # noqa: S101
             _write_roster(json_block, company)
-            choice, feedback = founder_review("Roster", roster_md_path)
+            questions = _extract_founder_questions(raw_roster)
+            choice, feedback = founder_review("Roster", roster_md_path, questions=questions)
 
     return json_block
 

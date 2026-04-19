@@ -26,3 +26,16 @@ Your output MUST be a single, complete Markdown document with the following sect
 - Do NOT include any text outside of the Markdown document. No preamble, no sign-off.
 - Every open question MUST come with at least 1 and at most 3 recommended choices.
 - Under NO circumstances produce incomplete sections. Every heading listed above MUST appear and contain substantive content.
+- **Founder Questions:** If you have open questions or recommendations for the Founder, you MUST append a JSON block at the very end of your output containing a `founder_questions` array.
+  Example:
+  ```json
+  {
+    "founder_questions": [
+      {
+        "question": "Which database should we use?",
+        "choices": ["PostgreSQL", "MySQL", "MongoDB"]
+      }
+    ]
+  }
+  ```
+  If a question is open-ended, you may omit the `choices` array or provide an empty list.

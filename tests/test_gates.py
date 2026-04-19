@@ -63,3 +63,30 @@ def test_abort(tmp_path: Path) -> None:
         mock_select.return_value.ask.return_value = None
         founder_review("Test Phase", artifact)
         mock_exit.assert_called_once_with(0)
+
+
+def test_founder_questions(tmp_path: Path) -> None:
+    """Test answering founder questions returns 'm' with answers as feedback."""
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# Test\n\nContent.\n")
+    questions = [
+        {"question": "DB choice?", "choices": ["PG", "Lite"]},
+        {"question": "Project name?"},
+    ]
+
+    with (
+        patch("asw.gates.questionary.select") as mock_select,
+        patch("asw.gates.questionary.text") as mock_text,
+    ):
+        # First question: select "PG"
+        mock_select.return_value.ask.return_value = "PG"
+        # Second question: type "My Project"
+        mock_text.return_value.ask.return_value = "My Project"
+
+        choice, feedback = founder_review("Test Phase", artifact, questions=questions)
+
+    assert choice == "m"
+    assert "DB choice?" in feedback
+    assert "PG" in feedback
+    assert "Project name?" in feedback
+    assert "My Project" in feedback

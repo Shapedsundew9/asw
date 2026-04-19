@@ -26,6 +26,14 @@ Each element in the array MUST have these keys:
 | `responsibility` | string | One-sentence description of what this role owns in the architecture. |
 | `assigned_standards` | array of strings | Filenames from the available standards list that apply to this role. |
 
+### Optional Key
+
+The JSON object may also include:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `founder_questions` | array of objects | Optional list of questions: `{"question": str, "choices": [str]}`. |
+
 ### Example Output
 
 ```json

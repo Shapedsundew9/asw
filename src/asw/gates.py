@@ -16,10 +16,16 @@ logger = logging.getLogger("asw.gates")
 _console = Console()
 
 
-def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | None]:
+def founder_review(
+    phase_name: str,
+    artifact_path: Path,
+    questions: list[dict] | None = None,
+) -> tuple[str, str | None]:
     """Pause for Founder review of an artifact.
 
-    Displays a summary and prompts for a decision.
+    Displays a summary and prompts for a decision. If *questions* are provided,
+    they are presented first and answering them automatically triggers a "Modify"
+    action with the answers as feedback.
 
     Parameters
     ----------
@@ -27,6 +33,8 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
         Human-readable name of the current phase (e.g. ``"PRD"``).
     artifact_path:
         Path to the artifact file to review.
+    questions:
+        Optional list of question objects to ask the Founder.
 
     Returns:
     -------
@@ -46,6 +54,36 @@ def founder_review(phase_name: str, artifact_path: Path) -> tuple[str, str | Non
             border_style="blue",
         )
     )
+
+    if questions:
+        _console.print("\n[bold yellow]Agent has questions/recommendations for you:[/bold yellow]")
+        answers = []
+        for i, q in enumerate(questions, 1):
+            q_text = q.get("question", "No question text provided.")
+            choices = q.get("choices", [])
+
+            if choices:
+                # Present choices + "Something else..."
+                options = [questionary.Choice(c, value=c) for c in choices]
+                options.append(questionary.Choice("Something else...", value="__other__"))
+                ans = questionary.select(f"Q{i}: {q_text}", choices=options).ask()
+
+                if ans == "__other__":
+                    ans = questionary.text("Please specify:").ask()
+            else:
+                # Free-form text
+                ans = questionary.text(f"Q{i}: {q_text}").ask()
+
+            if ans is None:
+                # User aborted
+                _console.print("\n[bold red]Pipeline stopped by Founder.[/bold red]")
+                sys.exit(0)
+
+            answers.append(f"Q: {q_text}\nA: {ans}")
+
+        feedback_text = "Here are the answers to your questions:\n\n" + "\n\n".join(answers)
+        _console.print("[dim]──── Answers captured, automatically modifying artifact ────[/dim]")
+        return "m", feedback_text
 
     choice = questionary.select(
         "Founder Action:",

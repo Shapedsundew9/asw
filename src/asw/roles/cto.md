@@ -18,6 +18,7 @@ A fenced JSON code block (` ```json `) containing a single JSON object with thes
 | `data_models` | array | Each element: `{"name": str, "fields": [{"name": str, "type": str}]}`. |
 | `api_contracts` | array | Each element: `{"endpoint": str, "method": str, "description": str}`. |
 | `deployment` | object | Keys: `platform`, `strategy`, `requirements`. |
+| `founder_questions` | array | (Optional) List of objects: `{"question": str, "choices": [str]}`. |
 
 ### 2. Architecture Diagram
 
