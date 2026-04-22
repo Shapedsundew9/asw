@@ -57,6 +57,7 @@ Each element in the array MUST have these keys:
 ## Strict Rules
 
 - Start from `SELECTED_TEAM` and preserve the approved team composition exactly. Do NOT add roles, remove roles, rename roles, or change filenames.
+- `Development Lead` and `DevOps Engineer` are immutable core roles and must remain present with filenames `development_lead.md` and `devops_engineer.md` whenever they appear in `SELECTED_TEAM`.
 - Use the architecture and execution plan to elaborate each approved role into a concrete Phase 1 operating brief.
 - Every selected team entry must appear exactly once in `hired_agents`.
 - Every `filename` MUST match the pattern `lowercase_underscore.md`.

@@ -24,7 +24,7 @@ FAILED_ARTIFACTS_DIR = "failed"
 def new_pipeline_state() -> dict:
     """Return an empty pipeline state document."""
     return {
-        "version": "0.2",
+        "version": "0.3",
         "tracked_files": {},
         "phases": {},
     }
@@ -195,13 +195,14 @@ def write_failed_artifact(
     return failed_path
 
 
-def mark_phase_complete(
+def mark_phase_complete(  # pylint: disable=too-many-arguments
     workdir: Path,
     state: dict,
     phase: str,
     *,
     input_paths: list[Path] | None = None,
     output_paths: list[Path] | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> dict:
     """Record a phase as completed in *state* and persist to disk.
 
@@ -212,11 +213,15 @@ def mark_phase_complete(
     update_tracked_files(state, input_snapshot)
     update_tracked_files(state, output_snapshot)
 
-    state.setdefault("phases", {})[phase] = {
+    phase_record: dict[str, object] = {
         "completed_at": datetime.now(tz=timezone.utc).isoformat(),
         "inputs": input_snapshot,
         "outputs": output_snapshot,
     }
+    if metadata:
+        phase_record["metadata"] = metadata
+
+    state.setdefault("phases", {})[phase] = phase_record
     write_pipeline_state(workdir, state)
     return state
 

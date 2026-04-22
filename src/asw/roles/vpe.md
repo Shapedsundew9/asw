@@ -48,7 +48,7 @@ Each selected team entry MUST be an object with:
 | Key | Type | Description |
 | --- | --- | --- |
 | `title` | string | Human-readable role title. |
-| `filename` | string | Role prompt filename in `lowercase_underscore.md` format. |
+| `filename` | string | Role prompt filename in lowercase underscore format ending with `.md`; digits are allowed, for example `3d_graphics_engineer.md`. |
 | `responsibility` | string | One-sentence ownership summary for the role. |
 | `rationale` | string | Why this role is needed now instead of later. |
 
@@ -75,9 +75,11 @@ Each deferred entry MUST be an object with:
 
 - Base the plan on the provided Vision, PRD, and Architecture. Do NOT invent requirements.
 - The `selected_team` MUST represent only the roles needed for the immediate implementation phase. Do NOT include speculative future hires that can be deferred.
+- Every execution plan MUST include the immutable core roles `Development Lead` with filename `development_lead.md` and `DevOps Engineer` with filename `devops_engineer.md` in `selected_team`.
 - The six baseline specialist roles from the design brief are optional candidates, not mandatory hires. Only include them when the context justifies them.
 - Use `deferred_roles_or_capabilities` to explain what is intentionally postponed and why.
 - `selected_team_roles` values MUST correspond to titles present in `selected_team`.
+- Every phase in `phases` MUST include both `Development Lead` and `DevOps Engineer` in `selected_team_roles`.
 - If a `CURRENT_EXECUTION_PLAN` section is provided, revise that plan instead of starting over from scratch.
 - If a `FOUNDER_ANSWERS` section is provided, those decisions are resolved and MUST be incorporated into the updated plan.
 - Do NOT re-ask questions that already have answers in `FOUNDER_ANSWERS` or in the current execution plan JSON. Only include `founder_questions` entries for genuinely unresolved strategic decisions.

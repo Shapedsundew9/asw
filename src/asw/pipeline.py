@@ -17,6 +17,7 @@ class PipelineRunOptions:
     stage_all: bool = False
     debug: bool = False
     restart: bool = False
+    execute_phase_setups: bool = False
 
 
 @dataclass

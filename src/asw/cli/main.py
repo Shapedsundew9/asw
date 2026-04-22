@@ -63,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete existing .company/ directory and restart the pipeline from scratch.",
     )
     start_parser.add_argument(
+        "--execute-phase-setups",
+        action="store_true",
+        default=False,
+        help="Allow Founder-approved phase setup scripts to execute inside the workspace.",
+    )
+    start_parser.add_argument(
         "--debug",
         nargs="?",
         const=True,
@@ -165,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         stage_all=args.stage_all,
         debug=bool(args.debug),
         restart=args.restart,
+        execute_phase_setups=args.execute_phase_setups,
     )
 
     return run_pipeline(

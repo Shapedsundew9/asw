@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 
+from asw.core_roles import MANDATORY_CORE_ROLE_TITLES, MANDATORY_CORE_ROLES
+
 _REQUIRED_KEYS = (
     "project_name",
     "tech_stack",
@@ -14,7 +16,8 @@ _REQUIRED_KEYS = (
     "deployment",
 )
 
-_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
+_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]*\.md$")
+_TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str]) -> None:
@@ -24,8 +27,19 @@ def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str
         errors.append(f"{prefix}.{key}: must be a non-empty string.")
 
 
-def _expect_string_list(data: dict, key: str, prefix: str, errors: list[str], *, allow_empty: bool = False) -> None:
+def _expect_string_list(
+    data: dict,
+    key: str,
+    prefix: str,
+    errors: list[str],
+    *,
+    allow_empty: bool = False,
+    allow_missing: bool = False,
+) -> None:
     """Require *key* in *data* to be a list of non-empty strings."""
+    if allow_missing and key not in data:
+        return
+
     value = data.get(key)
     if not isinstance(value, list):
         errors.append(f"{prefix}.{key}: must be an array.")
@@ -70,6 +84,7 @@ def _validate_founder_questions(data: dict, errors: list[str]) -> None:
 def _validate_selected_team(data: dict, errors: list[str]) -> set[str]:
     """Validate the selected team and return the discovered role titles."""
     selected_titles: set[str] = set()
+    selected_filenames_by_title: dict[str, str] = {}
     selected_team = data.get("selected_team")
     if not isinstance(selected_team, list) or not selected_team:
         errors.append("selected_team: must be a non-empty array.")
@@ -92,6 +107,15 @@ def _validate_selected_team(data: dict, errors: list[str]) -> set[str]:
         title = entry.get("title")
         if isinstance(title, str) and title.strip():
             selected_titles.add(title)
+            if isinstance(filename, str) and filename.strip():
+                selected_filenames_by_title[title] = filename
+
+    for role in MANDATORY_CORE_ROLES:
+        if role.title not in selected_titles:
+            errors.append(f"selected_team: missing mandatory role '{role.title}'.")
+            continue
+        if selected_filenames_by_title.get(role.title) != role.filename:
+            errors.append(f"selected_team: mandatory role '{role.title}' must use filename '{role.filename}'.")
     return selected_titles
 
 
@@ -122,6 +146,9 @@ def _validate_phases(data: dict, selected_titles: set[str], errors: list[str]) -
         for role in selected_team_roles:
             if isinstance(role, str) and selected_titles and role not in selected_titles:
                 errors.append(f"{prefix}.selected_team_roles: '{role}' is not present in selected_team.")
+        for core_role in MANDATORY_CORE_ROLE_TITLES:
+            if core_role not in selected_team_roles:
+                errors.append(f"{prefix}.selected_team_roles: must include '{core_role}'.")
 
 
 def _validate_generic_role_catalog(data: dict, errors: list[str]) -> None:
@@ -211,4 +238,72 @@ def validate_execution_plan(content: str) -> list[str]:
     _validate_deferred_items(data, errors)
 
     _validate_founder_questions(data, errors)
+    return errors
+
+
+def validate_phase_task_mapping(  # pylint: disable=too-many-branches,too-many-locals
+    content: str,
+    *,
+    allowed_roles: set[str] | None = None,
+) -> list[str]:
+    """Validate the JSON task mapping embedded in a phase design artifact."""
+    errors: list[str] = []
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        errors.append(f"Invalid JSON: {exc}")
+        return errors
+
+    if not isinstance(data, dict):
+        errors.append(f"Expected a JSON object at top level, got {type(data).__name__}.")
+        return errors
+
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        errors.append("tasks: must be a non-empty array.")
+        return errors
+
+    seen_ids: set[str] = set()
+    discovered_ids: list[str] = []
+
+    for idx, task in enumerate(tasks):
+        prefix = f"tasks[{idx}]"
+        if not isinstance(task, dict):
+            errors.append(f"{prefix}: must be an object.")
+            continue
+
+        _expect_non_empty_string(task, "id", prefix, errors)
+        _expect_non_empty_string(task, "title", prefix, errors)
+        _expect_non_empty_string(task, "owner", prefix, errors)
+        _expect_non_empty_string(task, "objective", prefix, errors)
+        _expect_string_list(task, "depends_on", prefix, errors, allow_empty=True, allow_missing=True)
+        _expect_string_list(task, "deliverables", prefix, errors)
+        _expect_string_list(task, "acceptance_criteria", prefix, errors)
+
+        task_id = task.get("id")
+        if isinstance(task_id, str) and task_id.strip():
+            if not _TASK_ID_RE.match(task_id):
+                errors.append(f"{prefix}.id: must match lowercase_underscore format.")
+            elif task_id in seen_ids:
+                errors.append(f"{prefix}.id: duplicate task id '{task_id}'.")
+            else:
+                seen_ids.add(task_id)
+                discovered_ids.append(task_id)
+
+        owner = task.get("owner")
+        if allowed_roles and isinstance(owner, str) and owner.strip() and owner not in allowed_roles:
+            errors.append(f"{prefix}.owner: '{owner}' is not present in the current phase team.")
+
+    valid_ids = set(discovered_ids)
+    for idx, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            continue
+        depends_on = task.get("depends_on")
+        if not isinstance(depends_on, list):
+            continue
+        for dep_idx, dependency in enumerate(depends_on):
+            if isinstance(dependency, str) and dependency and dependency not in valid_ids:
+                errors.append(f"tasks[{idx}].depends_on[{dep_idx}]: unknown task id '{dependency}'.")
+
     return errors

@@ -34,11 +34,13 @@ def test_init_copies_role_templates(tmp_path: Path) -> None:
 
     roles_dir = company / "roles"
     role_files = list(roles_dir.glob("*.md"))
-    assert len(role_files) >= 5
+    assert len(role_files) >= 7
 
     names = {f.name for f in role_files}
     assert "cpo.md" in names
     assert "cto.md" in names
+    assert "development_lead.md" in names
+    assert "devops_engineer.md" in names
     assert "vpe.md" in names
 
 

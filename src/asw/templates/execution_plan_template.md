@@ -54,3 +54,9 @@ Recommended shape:
   ]
 }
 ```
+
+Mandatory core roles:
+
+- Always include `Development Lead` with filename `development_lead.md` in `selected_team`.
+- Always include `DevOps Engineer` with filename `devops_engineer.md` in `selected_team`.
+- Every phase's `selected_team_roles` must include both `Development Lead` and `DevOps Engineer`.

@@ -7,11 +7,12 @@ import logging
 import re
 from pathlib import Path
 
+from asw.core_roles import MANDATORY_CORE_ROLES
 from asw.founder_questions import _render_founder_question_section
 
 logger = logging.getLogger("asw.hiring")
 
-_ROSTER_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
+_ROSTER_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]*\.md$")
 _ROSTER_REQUIRED_KEYS = {
     "title",
     "filename",
@@ -83,6 +84,43 @@ def _extract_json_block(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _resolve_available_standards(standards_dir: Path | None) -> set[str] | None:
+    """Return available standards when the standards directory exists."""
+    if standards_dir is None or not standards_dir.is_dir():
+        return None
+    return {item.name for item in standards_dir.iterdir() if item.is_file()}
+
+
+def _record_roster_entry(
+    entry: dict,
+    seen_titles: set[str],
+    seen_filenames_by_title: dict[str, str],
+) -> None:
+    """Record title and filename data for later mandatory-role checks."""
+    title = entry.get("title")
+    filename = entry.get("filename")
+    if not isinstance(title, str) or not title:
+        return
+
+    seen_titles.add(title)
+    if isinstance(filename, str) and filename:
+        seen_filenames_by_title[title] = filename
+
+
+def _validate_mandatory_core_roles(
+    seen_titles: set[str],
+    seen_filenames_by_title: dict[str, str],
+    errors: list[str],
+) -> None:
+    """Append validation errors for any missing or renamed core roles."""
+    for role in MANDATORY_CORE_ROLES:
+        if role.title not in seen_titles:
+            errors.append(f"hired_agents: missing mandatory role '{role.title}'.")
+            continue
+        if seen_filenames_by_title.get(role.title) != role.filename:
+            errors.append(f"hired_agents: mandatory role '{role.title}' must use filename '{role.filename}'.")
+
+
 def _lint_roster(content: str, *, standards_dir: Path | None = None) -> list[str]:
     """Validate Hiring Manager roster output."""
     errors: list[str] = []
@@ -107,9 +145,9 @@ def _lint_roster(content: str, *, standards_dir: Path | None = None) -> list[str
         errors.append("'hired_agents' must be a non-empty array.")
         return errors
 
-    available: set[str] | None = None
-    if standards_dir is not None and standards_dir.is_dir():
-        available = {item.name for item in standards_dir.iterdir() if item.is_file()}
+    available = _resolve_available_standards(standards_dir)
+    seen_titles: set[str] = set()
+    seen_filenames_by_title: dict[str, str] = {}
 
     for idx, entry in enumerate(agents):
         prefix = f"hired_agents[{idx}]"
@@ -122,7 +160,10 @@ def _lint_roster(content: str, *, standards_dir: Path | None = None) -> list[str
             errors.append(f"{prefix}: missing keys: {', '.join(sorted(missing))}")
             continue
 
+        _record_roster_entry(entry, seen_titles, seen_filenames_by_title)
         _lint_roster_entry(entry, prefix, available, errors)
+
+    _validate_mandatory_core_roles(seen_titles, seen_filenames_by_title, errors)
 
     logger.debug("Roster lint result: %d error(s)", len(errors))
     for err in errors:

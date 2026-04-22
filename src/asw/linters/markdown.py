@@ -26,6 +26,34 @@ _CHECKED_RE = re.compile(r"^\s*[\-*+]\s+\[[xX]\]\s+.+", re.MULTILINE)
 _UNCHECKED_RE = re.compile(r"^\s*[\-*+]\s+\[ \]\s+.+", re.MULTILINE)
 
 
+def extract_markdown_section_body(content: str, heading: str) -> str | None:
+    """Return the body for *heading*, or ``None`` when it is absent."""
+    lines = content.splitlines()
+    heading_level: int | None = None
+    collecting = False
+    body: list[str] = []
+
+    for line in lines:
+        match = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
+        if match:
+            level = len(match.group(1))
+            title = match.group(2).strip()
+            if collecting and heading_level is not None and level <= heading_level:
+                break
+            if title.casefold() == heading.casefold():
+                collecting = True
+                heading_level = level
+                body = []
+                continue
+
+        if collecting:
+            body.append(line)
+
+    if not collecting:
+        return None
+    return "\n".join(body).strip()
+
+
 def validate_checklist(content: str) -> list[str]:
     """Verify completed checklist items exist and none are unchecked.
 
@@ -77,5 +105,19 @@ def validate_sections(content: str, required_sections: list[str]) -> list[str]:
         pattern = rf"^#{{1,6}}\s+{re.escape(section)}\s*$"
         if not re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
             errors.append(f"Required section missing: '{section}'")
+
+    return errors
+
+
+def validate_markdown_list_section(content: str, heading: str) -> list[str]:
+    """Verify *heading* exists and contains at least one Markdown list item."""
+    errors: list[str] = []
+    body = extract_markdown_section_body(content, heading)
+    if body is None:
+        errors.append(f"Required section missing: '{heading}'")
+        return errors
+
+    if not re.search(r"^\s*[\-*+]\s+\S", body, re.MULTILINE):
+        errors.append(f"Section '{heading}' must contain at least one Markdown list item.")
 
     return errors

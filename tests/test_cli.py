@@ -34,6 +34,7 @@ def test_start_help_lists_supported_flags(capsys: pytest.CaptureFixture[str]) ->
     assert "--no-commit" in start_help
     assert "--stage-all" in start_help
     assert "--restart" in start_help
+    assert "--execute-phase-setups" in start_help
     assert "--debug [LOGFILE]" in start_help
 
 
@@ -102,3 +103,25 @@ def test_main_creates_missing_debug_log_directory(tmp_path: Path) -> None:
 
     assert result == 0
     assert missing_log.parent.is_dir()
+
+
+def test_main_passes_execute_phase_setups_to_pipeline(tmp_path: Path) -> None:
+    """CLI should forward ``--execute-phase-setups`` to the pipeline."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n")
+
+    with patch("asw.orchestrator.run_pipeline", return_value=0) as mock_run_pipeline:
+        result = main(
+            [
+                "start",
+                "--vision",
+                str(vision),
+                "--workdir",
+                str(tmp_path),
+                "--no-commit",
+                "--execute-phase-setups",
+            ]
+        )
+
+    assert result == 0
+    assert mock_run_pipeline.call_args.kwargs["options"].execute_phase_setups is True

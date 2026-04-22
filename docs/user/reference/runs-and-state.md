@@ -16,6 +16,7 @@ Every run uses a `.company/` directory inside your working directory. One file i
 - The pipeline version.
 - A tracked-file hash catalog keyed by file path.
 - Per-phase snapshots with `completed_at`, saved input hashes, and saved output hashes.
+- Optional per-phase metadata for guarded execution steps such as approved proposal checksums and attempt logs.
 
 `asw` compares those saved hashes with the current files before deciding whether to skip, prompt, or rerun a phase.
 
@@ -48,6 +49,14 @@ In practice this means:
 - If a completed phase's tracked inputs changed but its outputs still exist, `asw` prompts at the earliest affected phase.
 - Resume works even when you used `--no-commit`; saved state is separate from git.
 
+For the guarded DevOps setup slice, `asw` tracks three separate steps per execution-plan phase:
+
+- `phase-loop:phase_<N>:design`
+- `phase-loop:phase_<N>:devops-proposal`
+- `phase-loop:phase_<N>:devops-execution`
+
+The first two steps can be skipped when their tracked inputs and outputs still match. The execution step is treated more conservatively: if the saved setup proposal or generated script changed, Founder approval must happen again before any script runs.
+
 ## What Happens When Tracked Inputs Change
 
 The vision file is one tracked input, but it is no longer special-cased. `asw` handles vision changes the same way it handles changes to bundled role files, templates, standards, or saved upstream artifacts.
@@ -76,6 +85,7 @@ Common reasons to use `--restart`:
 
 - You want a completely fresh PRD and architecture.
 - You want a fresh execution plan and first-phase team recommendation.
+- You want to discard saved phase-design or setup-proposal artifacts and regenerate them from scratch.
 - You significantly rewrote the vision file.
 - You manually edited artifacts and want to discard those edits.
 - You suspect saved state and on-disk artifacts are out of sync.
@@ -96,6 +106,7 @@ Examples:
 - If `execution_plan.json` was deleted after a previous run, the execution-plan phase runs again.
 - If `execution_plan_template.md` changed after a previous run, `asw` prompts at the execution-plan phase instead of silently skipping it.
 - If a standards file or `role_template.md` changed after a previous run, `asw` prompts at the earliest affected downstream phase instead of requiring you to remove artifacts by hand.
+- If a phase design or DevOps proposal input changed after a previous run, `asw` prompts at the earliest affected phase-loop step instead of silently reusing stale preparation artifacts.
 - If all tracked inputs and outputs still match, the rerun quickly skips everything.
 
 ## Create Debug Logs
@@ -130,6 +141,8 @@ If you omit the log path, `asw` creates a file named like `asw-debug-YYYYMMDD-HH
 
 - If a run fails on a missing git repository, either initialize git or rerun with `--no-commit`.
 - If a generated artifact is structurally invalid, inspect the saved file under `.company/artifacts/failed/`, then update the vision or your custom role/template files and rerun.
+- If a DevOps proposal is approved but the generated script later changes, expect to review and approve it again before execution.
+- If a DevOps script run reports tracked repository mutations outside the approved artifact boundary, stop and inspect the attempt log under `.company/artifacts/phases/` before continuing.
 - If the prompt reports changed tracked inputs, rerun from the earliest affected phase unless you intentionally want to continue with stale artifacts.
 - If the saved artifacts look stale after major edits, use `--restart` instead of trying to repair the state manually.
 - If you need to inspect what happened before the failure, rerun with `--debug` and keep the log file.

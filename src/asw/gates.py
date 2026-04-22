@@ -37,6 +37,17 @@ class FounderReviewResult:
     answers: list[dict[str, str]] = field(default_factory=list)
 
 
+ExecutionApprovalAction = Literal["approve", "revise"]
+
+
+@dataclass(frozen=True)
+class ExecutionApprovalResult:
+    """Structured result returned by the dangerous-execution approval gate."""
+
+    action: ExecutionApprovalAction
+    feedback: str | None = None
+
+
 def _stop_pipeline() -> NoReturn:
     """Stop the pipeline at the Founder gate."""
     _console.print("\n[bold red]Pipeline stopped by Founder.[/bold red]")
@@ -172,3 +183,56 @@ def founder_review(
         return _capture_founder_answers(phase_name, questions)
 
     return _prompt_founder_action(phase_name)
+
+
+def founder_approve_devops_execution(
+    phase_name: str,
+    artifact_path: Path,
+    *,
+    script_path: Path,
+) -> ExecutionApprovalResult:
+    """Pause for explicit approval before running a mutating DevOps script."""
+    content = artifact_path.read_text(encoding="utf-8")
+    warning = (
+        "# Dangerous Execution Gate\n\n"
+        "This is the first mutating step in the self-hosted ASW repository. "
+        "The generated script below will run inside the current workspace only after explicit approval.\n\n"
+        f"- Phase: {phase_name}\n"
+        f"- Proposal Artifact: {artifact_path}\n"
+        f"- Script Path: {script_path}\n\n"
+    )
+    md = Markdown(warning + content)
+
+    _console.print(
+        Panel(
+            md,
+            title="[bold red]FOUNDER EXECUTION GATE – DevOps Script[/bold red]",
+            subtitle=f"[dim]Script: {script_path}[/dim]",
+            border_style="red",
+        )
+    )
+
+    choice = questionary.select(
+        "Founder Action:",
+        choices=[
+            questionary.Choice("Approve And Execute", value="approve", shortcut_key="a"),
+            questionary.Choice("Request Revision", value="revise", shortcut_key="r"),
+            questionary.Choice("Stop", value="stop", shortcut_key="s"),
+        ],
+    ).ask()
+
+    if choice is None or choice == "stop":
+        _stop_pipeline()
+
+    if choice == "revise":
+        feedback = _prompt_text_feedback(
+            "Explain what should change before this DevOps script is allowed to run (press ESC then ENTER to submit):"
+        )
+        if feedback is None:
+            _stop_pipeline()
+        _console.print("[dim]──── Revision request captured ────[/dim]")
+        logger.debug("Founder requested DevOps execution revision for %s:\n%s", phase_name, feedback)
+        return ExecutionApprovalResult(action="revise", feedback=feedback)
+
+    logger.debug("Founder approved DevOps execution for %s using script %s", phase_name, script_path)
+    return ExecutionApprovalResult(action="approve")
