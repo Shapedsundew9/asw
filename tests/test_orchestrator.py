@@ -64,6 +64,55 @@ def test_agent_loop_retries_only_transient_backend_failures() -> None:
     assert agent.run.call_count == 2
 
 
+def test_agent_loop_uses_role_aware_status_without_first_attempt_label(capsys: pytest.CaptureFixture[str]) -> None:
+    """The initial agent run should show concise status text without attempt-one noise."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(return_value="valid output")
+
+    with patch("asw.orchestrator._supports_live_status", return_value=False):
+        result = _agent_loop(agent, {"vision": "demo"}, lambda _: [], "PRD")
+
+    captured = capsys.readouterr()
+    assert result == "valid output"
+    assert "attempt 1" not in captured.out.lower()
+    assert "may take up to 5 min" not in captured.out.lower()
+    assert "via gemini cli" not in captured.out.lower()
+    assert "CPO drafting the PRD" in captured.out
+
+
+def test_agent_loop_shows_feedback_stage_status(capsys: pytest.CaptureFixture[str]) -> None:
+    """Feedback runs should describe the review work rather than the raw agent label."""
+    agent = MagicMock()
+    agent.name = "DevOps Engineer Feedback"
+    agent.run = MagicMock(return_value="valid output")
+
+    with patch("asw.orchestrator._supports_live_status", return_value=False):
+        _agent_loop(
+            agent,
+            {"phase_design_draft": "demo"},
+            lambda _: [],
+            "phase_1 - Local Validation Feedback: DevOps Engineer",
+        )
+
+    captured = capsys.readouterr()
+    assert "DevOps Engineer reviewing the design for phase_1 - Local Validation" in captured.out
+
+
+def test_agent_loop_shows_retry_label_only_when_retrying(capsys: pytest.CaptureFixture[str]) -> None:
+    """Retry output should appear only after a transient failure triggers another attempt."""
+    agent = MagicMock()
+    agent.name = "CPO"
+    agent.run = MagicMock(side_effect=[TransientLLMError("busy", reason="busy"), "valid output"])
+
+    with patch("asw.orchestrator._supports_live_status", return_value=False):
+        _agent_loop(agent, {"vision": "demo"}, lambda _: [], "PRD")
+
+    captured = capsys.readouterr()
+    assert "attempt 1" not in captured.out.lower()
+    assert "Retry 2/3: CPO drafting the PRD" in captured.out
+
+
 def test_agent_loop_fails_fast_on_non_retryable_backend_error() -> None:
     """Non-transient backend failures should not be retried."""
     agent = MagicMock()

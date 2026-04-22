@@ -13,6 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from rich.console import Console
+
 from asw.agents.base import Agent
 from asw.company import (
     clear_company,
@@ -66,6 +68,7 @@ _REQUEST_MORE_QUESTIONS_ESCALATION = (
 )
 
 logger = logging.getLogger("asw.orchestrator")
+_console = Console(stderr=True)
 
 
 class PipelineRestartRequested(RuntimeError):
@@ -449,6 +452,67 @@ def _lint_architecture(content: str) -> tuple[list[str], str | None, str | None]
     return errors, json_block, mermaid_block
 
 
+def _supports_live_status() -> bool:
+    """Return whether the current terminal supports live Rich status updates."""
+    return _console.is_terminal and not _console.is_dumb_terminal
+
+
+def _agent_display_name(agent_name: str) -> str:
+    """Return the user-facing display name for an agent."""
+    return agent_name.removesuffix(" Feedback")
+
+
+def _agent_status_message(agent_name: str, phase_name: str) -> str:
+    """Return a role-aware progress message for an agent invocation."""
+    display_name = _agent_display_name(agent_name)
+
+    if phase_name == "PRD":
+        return f"{display_name} drafting the PRD"
+    if phase_name == "Architecture":
+        return f"{display_name} designing the architecture"
+    if phase_name == "Execution Plan":
+        return f"{display_name} designing the execution plan"
+    if phase_name == "Roster":
+        return f"{display_name} assembling the roster"
+    if phase_name.startswith("Role: "):
+        role_title = phase_name.removeprefix("Role: ")
+        return f"{display_name} writing the role prompt for {role_title}"
+    if phase_name.endswith(" Design Draft"):
+        label = phase_name.removesuffix(" Design Draft")
+        return f"{display_name} drafting the design for {label}"
+    if " Feedback: " in phase_name:
+        label, _, _role_title = phase_name.partition(" Feedback: ")
+        return f"{display_name} reviewing the design for {label}"
+    if phase_name.endswith(" Design Final"):
+        label = phase_name.removesuffix(" Design Final")
+        return f"{display_name} finalizing the design for {label}"
+    if phase_name.endswith(" DevOps Proposal"):
+        label = phase_name.removesuffix(" DevOps Proposal")
+        return f"{display_name} preparing the DevOps proposal for {label}"
+    return f"{display_name} working on {phase_name}"
+
+
+def _invoke_agent_with_progress(
+    agent: Agent,
+    context: dict[str, str],
+    phase_name: str,
+    *,
+    feedback: str | None = None,
+    attempt: int,
+) -> str:
+    """Run an agent while showing concise progress for the current stage."""
+    status_message = _agent_status_message(agent.name, phase_name)
+    if attempt > 1:
+        status_message = f"Retry {attempt}/{_MAX_RETRIES + 1}: {status_message}"
+
+    if _supports_live_status():
+        with _console.status(status_message, spinner="dots12", spinner_style="cyan"):
+            return agent.run(context, feedback=feedback)
+
+    print(f"\n>> {status_message}...", flush=True)
+    return agent.run(context, feedback=feedback)
+
+
 def _agent_loop(
     agent: Agent,
     context: dict[str, str],
@@ -462,13 +526,8 @@ def _agent_loop(
 
     for attempt in range(1, _MAX_RETRIES + 2):  # 1 initial + _MAX_RETRIES
         logger.debug("Agent loop: %s attempt %d/%d", agent.name, attempt, _MAX_RETRIES + 1)
-        print(f"\n>> {agent.name} – attempt {attempt}")
-        print(
-            f"   Invoking {agent.name} via Gemini CLI (may take up to 5 min)…",
-            flush=True,
-        )
         try:
-            output = agent.run(context, feedback=feedback)
+            output = _invoke_agent_with_progress(agent, context, phase_name, feedback=feedback, attempt=attempt)
         except LLMInvocationError as exc:
             logger.warning(
                 "Agent %s invocation failed (retryable=%s, reason=%s): %s",
@@ -505,7 +564,7 @@ def _agent_loop(
             phase_name,
             string_checksum_prefix(output),
         )
-        print("   Response received.")
+        print(f"   Complete: {_agent_status_message(agent.name, phase_name)}.")
 
         errors = lint_fn(output)
         if not errors:
