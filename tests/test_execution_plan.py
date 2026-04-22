@@ -79,6 +79,20 @@ def test_validate_execution_plan_valid() -> None:
     assert not errors
 
 
+def test_validate_execution_plan_allows_digit_prefixed_role_filename() -> None:
+    """Custom role filenames may start with a digit when the title warrants it."""
+    payload = json.loads(json.dumps(_VALID_EXECUTION_PLAN))
+    payload["selected_team"][2]["title"] = "3D Graphics Engineer"
+    payload["selected_team"][2]["filename"] = "3d_graphics_engineer.md"
+    payload["selected_team"][2]["responsibility"] = "Implement procedural graphics systems."
+    payload["selected_team"][2]["rationale"] = "This role is required immediately for runtime 3D rendering work."
+    payload["phases"][0]["selected_team_roles"][2] = "3D Graphics Engineer"
+
+    errors = validate_execution_plan(json.dumps(payload))
+
+    assert not errors
+
+
 def test_validate_execution_plan_missing_selected_team() -> None:
     """selected_team is required and must be non-empty."""
     payload = dict(_VALID_EXECUTION_PLAN)

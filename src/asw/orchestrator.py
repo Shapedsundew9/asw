@@ -66,6 +66,9 @@ _REQUEST_MORE_QUESTIONS_ESCALATION = (
     "The founder explicitly requested another question round. Return at least one new unresolved founder "
     "question that is not already answered when any meaningful ambiguity remains."
 )
+_PHASE_SETUP_EXECUTION_DEFERRED_REASON = (
+    "Phase setup execution is deferred until the implementation loops are available."
+)
 
 logger = logging.getLogger("asw.orchestrator")
 _console = Console(stderr=True)
@@ -1047,6 +1050,7 @@ def _phase_design_request(phase_data: dict, team_entries: list[dict], *, harmoni
         "  ]\n"
         "}\n"
         "```\n\n"
+        "Every task object must include a depends_on array. Use [] when a task has no prerequisites.\n\n"
         "## Required Tooling\n"
         "- List every tool, package, or environment prerequisite needed for this phase. "
         "Use '- None.' if no tooling changes are required.\n\n"
@@ -1378,6 +1382,28 @@ def _run_or_skip_devops_execution_step(  # pylint: disable=too-many-locals
 
     if status.has_record:
         _print_rerun_reason(f"{label} DevOps execution", status)
+
+    if not exec_ctx.options.execute_phase_setups:
+        mark_phase_complete(
+            exec_ctx.workdir,
+            exec_ctx.state,
+            execution_key,
+            input_paths=input_paths,
+            output_paths=[],
+            metadata={
+                "status": "deferred",
+                "reason": _PHASE_SETUP_EXECUTION_DEFERRED_REASON,
+                "proposal_checksum": hash_file(paths.proposal_path),
+                "summary_checksum": hash_file(paths.summary_path),
+                "script_checksum": hash_file(paths.script_path),
+            },
+        )
+        print(
+            f"\n↩ Deferred DevOps execution for {label}. "
+            "Recorded the generated setup artifacts without running the script because phase setup "
+            "execution is not enabled in this pipeline yet."
+        )
+        return None
 
     attempt = 1
     while True:

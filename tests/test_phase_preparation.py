@@ -93,6 +93,33 @@ def test_lint_phase_design_accepts_valid_output() -> None:
     assert '"prepare_environment"' in task_mapping
 
 
+def test_lint_phase_design_accepts_missing_depends_on_for_root_task() -> None:
+    """Root tasks may omit depends_on and should be treated as dependency-free."""
+    design_without_depends_on = _VALID_PHASE_DESIGN.replace('      "depends_on": [],\n', "")
+
+    errors, task_mapping = lint_phase_design(
+        design_without_depends_on,
+        allowed_roles={"Development Lead", "DevOps Engineer", "Python Backend Developer"},
+    )
+
+    assert not errors
+    assert task_mapping is not None
+
+
+def test_lint_phase_design_rejects_non_array_depends_on() -> None:
+    """Task dependencies must still be arrays when the field is present."""
+    invalid_design = _VALID_PHASE_DESIGN.replace(
+        '      "depends_on": [],\n', '      "depends_on": "prepare_environment",\n'
+    )
+
+    errors, _ = lint_phase_design(
+        invalid_design,
+        allowed_roles={"Development Lead", "DevOps Engineer", "Python Backend Developer"},
+    )
+
+    assert any("tasks[0].depends_on: must be an array." in error for error in errors)
+
+
 def test_lint_phase_design_rejects_missing_tooling_section() -> None:
     """Phase designs must include a tooling section with a Markdown list."""
     invalid_design = _VALID_PHASE_DESIGN.replace("## Required Tooling\n- pytest\n\n", "")

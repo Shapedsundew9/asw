@@ -80,6 +80,29 @@ def test_lint_roster_valid(tmp_path: Path) -> None:
     assert not errors
 
 
+def test_lint_roster_allows_digit_prefixed_filename() -> None:
+    """Custom role filenames may start with a digit when they remain filesystem-safe."""
+    roster = {
+        "hired_agents": [
+            *_mandatory_role_entries(),
+            {
+                "title": "3D Graphics Engineer",
+                "filename": "3d_graphics_engineer.md",
+                "responsibility": "Implement rendering and shader systems.",
+                "mission": "Deliver the initial 3D rendering milestone.",
+                "scope": "Own runtime rendering systems for the approved phase.",
+                "key_deliverables": ["Implement rendering systems"],
+                "collaborators": ["Development Lead", "DevOps Engineer"],
+                "assigned_standards": [],
+            },
+        ]
+    }
+
+    errors = _lint_roster(_wrap_json(roster))
+
+    assert not errors
+
+
 def test_lint_roster_no_json_block() -> None:
     """Missing JSON block should be an error."""
     errors = _lint_roster("No JSON here.")

@@ -753,12 +753,15 @@ def test_full_pipeline(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
-        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
-        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION) as mock_approval,
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION) as mock_execute,
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
+    mock_approval.assert_not_called()
+    bash_calls = [call for call in mock_execute.call_args_list if call.args and call.args[0][0] == "bash"]
+    assert not bash_calls
 
     # Verify V0.1 artifacts were written.
     company = tmp_path / ".company"
@@ -809,6 +812,11 @@ def test_full_pipeline(tmp_path: Path) -> None:
         "phase-loop:phase_1:devops-execution",
     ):
         assert phase in state["phases"]
+    execution_phase = state["phases"]["phase-loop:phase_1:devops-execution"]
+    assert execution_phase["metadata"]["status"] == "deferred"
+    assert execution_phase["metadata"]["reason"] == (
+        "Phase setup execution is deferred until the implementation loops are available."
+    )
     phase_paths = build_phase_artifact_paths(company, 0)
     assert phase_paths.draft_path.is_file()
     assert phase_paths.final_path.is_file()
@@ -893,7 +901,11 @@ def test_devops_execution_revision_requires_reapproved_proposal(tmp_path: Path) 
         ),
         patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION) as mock_execute,
     ):
-        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+        result = run_pipeline(
+            vision_path=vision,
+            workdir=tmp_path,
+            options=PipelineRunOptions(execute_phase_setups=True),
+        )
 
     assert result == 0
     assert mock_llm.invoke.call_count == 12

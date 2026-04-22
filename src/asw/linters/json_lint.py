@@ -16,7 +16,7 @@ _REQUIRED_KEYS = (
     "deployment",
 )
 
-_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
+_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]*\.md$")
 _TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -27,8 +27,19 @@ def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str
         errors.append(f"{prefix}.{key}: must be a non-empty string.")
 
 
-def _expect_string_list(data: dict, key: str, prefix: str, errors: list[str], *, allow_empty: bool = False) -> None:
+def _expect_string_list(
+    data: dict,
+    key: str,
+    prefix: str,
+    errors: list[str],
+    *,
+    allow_empty: bool = False,
+    allow_missing: bool = False,
+) -> None:
     """Require *key* in *data* to be a list of non-empty strings."""
+    if allow_missing and key not in data:
+        return
+
     value = data.get(key)
     if not isinstance(value, list):
         errors.append(f"{prefix}.{key}: must be an array.")
@@ -266,7 +277,7 @@ def validate_phase_task_mapping(  # pylint: disable=too-many-branches,too-many-l
         _expect_non_empty_string(task, "title", prefix, errors)
         _expect_non_empty_string(task, "owner", prefix, errors)
         _expect_non_empty_string(task, "objective", prefix, errors)
-        _expect_string_list(task, "depends_on", prefix, errors, allow_empty=True)
+        _expect_string_list(task, "depends_on", prefix, errors, allow_empty=True, allow_missing=True)
         _expect_string_list(task, "deliverables", prefix, errors)
         _expect_string_list(task, "acceptance_criteria", prefix, errors)
 

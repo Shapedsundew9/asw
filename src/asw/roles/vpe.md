@@ -48,7 +48,7 @@ Each selected team entry MUST be an object with:
 | Key | Type | Description |
 | --- | --- | --- |
 | `title` | string | Human-readable role title. |
-| `filename` | string | Role prompt filename in `lowercase_underscore.md` format. |
+| `filename` | string | Role prompt filename in lowercase underscore format ending with `.md`; digits are allowed, for example `3d_graphics_engineer.md`. |
 | `responsibility` | string | One-sentence ownership summary for the role. |
 | `rationale` | string | Why this role is needed now instead of later. |
 

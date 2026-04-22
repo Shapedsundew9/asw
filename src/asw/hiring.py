@@ -12,7 +12,7 @@ from asw.founder_questions import _render_founder_question_section
 
 logger = logging.getLogger("asw.hiring")
 
-_ROSTER_FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
+_ROSTER_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]*\.md$")
 _ROSTER_REQUIRED_KEYS = {
     "title",
     "filename",
