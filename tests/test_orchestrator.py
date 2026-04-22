@@ -18,11 +18,13 @@ from asw.llm.errors import LLMInvocationError, TransientLLMError
 from asw.orchestrator import (
     PipelineRunOptions,
     _agent_loop,
+    _init_pipeline_state,
     _is_phase_done,
     _render_architecture_markdown,
     run_pipeline,
 )
 from asw.phase_preparation import PhaseArtifactPaths, build_phase_artifact_paths
+from asw.validation_contract import validation_contract_paths
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -50,6 +52,27 @@ def test_render_architecture_markdown_string_lists() -> None:
     assert "| Frontend | N/A | HTTP |" in md
     assert "- **Requirements:** Modern browser" in md
     assert "M, o, d, e, r, n" not in md
+
+
+def test_init_pipeline_state_bootstraps_validation_contract(tmp_path: Path) -> None:
+    """Pipeline initialization should create the validation contract artifacts once."""
+    state, company = _init_pipeline_state(tmp_path)
+
+    contract_json_path, contract_md_path = validation_contract_paths(company)
+
+    assert state == read_pipeline_state(tmp_path)
+    assert contract_json_path.is_file()
+    assert contract_md_path.is_file()
+
+    first_json = contract_json_path.read_text(encoding="utf-8")
+    first_markdown = contract_md_path.read_text(encoding="utf-8")
+
+    second_state, second_company = _init_pipeline_state(tmp_path)
+
+    assert second_company == company
+    assert second_state == state
+    assert contract_json_path.read_text(encoding="utf-8") == first_json
+    assert contract_md_path.read_text(encoding="utf-8") == first_markdown
 
 
 def test_agent_loop_retries_only_transient_backend_failures() -> None:

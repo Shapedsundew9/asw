@@ -17,6 +17,14 @@ class LLMBackend(Protocol):
         """Send prompts to the model and return its text response."""
         raise NotImplementedError
 
+    def invoke_plan(self, system_prompt: str, user_prompt: str) -> str:
+        """Send a planning-only prompt to the model and return its text response."""
+        raise NotImplementedError
+
+    def invoke_execute(self, system_prompt: str, user_prompt: str, *, auto_approve: bool = True) -> str:
+        """Send an execution prompt to the model and return its text response."""
+        raise NotImplementedError
+
 
 def get_backend(name: str = "gemini") -> LLMBackend:
     """Return an :class:`LLMBackend` implementation by *name*.

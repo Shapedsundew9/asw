@@ -56,6 +56,7 @@ from asw.phase_preparation import (
     snapshot_tracked_repo_files,
 )
 from asw.pipeline import PipelineExecutionContext, PipelineRunOptions, string_checksum_prefix
+from asw.validation_contract import ensure_validation_contract
 
 _MAX_RETRIES = 2
 _REQUEST_MORE_QUESTIONS_FEEDBACK = (
@@ -1886,6 +1887,7 @@ def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: b
 def _init_pipeline_state(workdir: Path) -> tuple[dict, Path]:
     """Load or create pipeline state and return ``(state, company)``."""
     company = init_company(workdir)
+    ensure_validation_contract(company)
     print(f"\n✓ Company directory initialised: {company}")
 
     state = read_pipeline_state(workdir)

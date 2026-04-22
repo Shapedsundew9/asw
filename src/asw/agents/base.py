@@ -37,22 +37,8 @@ class Agent:
     llm: LLMBackend
     standards: list[Path] = field(default_factory=list)
 
-    def run(self, context: dict[str, str], *, feedback: str | None = None) -> str:
-        """Execute the agent's role against the supplied *context*.
-
-        Parameters
-        ----------
-        context:
-            Key/value pairs injected into the user prompt (e.g.
-            ``{"vision": "<contents>"}``).
-        feedback:
-            Optional reviewer feedback from a prior rejected attempt.
-
-        Returns:
-        -------
-        str
-            The raw text output from the LLM.
-        """
+    def _load_system_prompt(self) -> str:
+        """Return the role prompt with any assigned standards appended."""
         system_prompt = self.role_file.read_text(encoding="utf-8")
         logger.debug(
             "Agent %s loading role file %s (%d chars, sha256=%s)",
@@ -85,15 +71,32 @@ class Agent:
             _checksum_prefix(system_prompt),
         )
 
+        return system_prompt
+
+    def _build_user_prompt(
+        self,
+        context: dict[str, str],
+        *,
+        feedback: str | None = None,
+        plan: str | None = None,
+    ) -> str:
+        """Return the assembled user prompt for the current invocation."""
+
         parts: list[str] = []
         for key, value in context.items():
             parts.append(f"### {key.upper()}\n\n{value}")
+
+        if plan is not None:
+            parts.append(f"### APPROVED IMPLEMENTATION PLAN\n\n{plan}")
 
         if feedback:
             parts.append(f"### REVIEWER FEEDBACK\n\n{feedback}")
 
         user_prompt = "\n\n".join(parts)
-        context_summary = ", ".join(f"{key}={len(value)} chars" for key, value in context.items()) or "(none)"
+        context_summary_items = [f"{key}={len(value)} chars" for key, value in context.items()]
+        if plan is not None:
+            context_summary_items.append(f"plan={len(plan)} chars")
+        context_summary = ", ".join(context_summary_items) or "(none)"
         logger.debug(
             "Agent %s assembled user prompt (%d chars, sha256=%s, context=[%s], feedback=%s)",
             self.name,
@@ -102,11 +105,85 @@ class Agent:
             context_summary,
             "yes" if feedback else "no",
         )
-        response = cast(str, self.llm.invoke(system_prompt, user_prompt))
+
+        return user_prompt
+
+    def _invoke(
+        self,
+        context: dict[str, str],
+        *,
+        mode: str,
+        feedback: str | None = None,
+        plan: str | None = None,
+        auto_approve: bool = True,
+    ) -> str:
+        """Invoke the backend for the requested mode and return the raw response."""
+        system_prompt = self._load_system_prompt()
+        user_prompt = self._build_user_prompt(context, feedback=feedback, plan=plan)
+
+        if mode == "plan":
+            response = cast(str, self.llm.invoke_plan(system_prompt, user_prompt))
+        elif mode == "execute":
+            response = cast(str, self.llm.invoke_execute(system_prompt, user_prompt, auto_approve=auto_approve))
+        else:
+            response = cast(str, self.llm.invoke(system_prompt, user_prompt))
+
         logger.debug(
-            "Agent %s received response (%d chars, sha256=%s)",
+            "Agent %s received %s response (%d chars, sha256=%s)",
             self.name,
+            mode,
             len(response),
             _checksum_prefix(response),
         )
         return response
+
+    def run(self, context: dict[str, str], *, feedback: str | None = None) -> str:
+        """Execute the agent's standard text-generation flow.
+
+        Args:
+            context: Key/value pairs injected into the user prompt.
+            feedback: Optional reviewer feedback from a prior rejected attempt.
+
+        Returns:
+            The raw text output from the LLM.
+        """
+        return self._invoke(context, mode="invoke", feedback=feedback)
+
+    def plan(self, context: dict[str, str], *, feedback: str | None = None) -> str:
+        """Execute the agent in planning mode.
+
+        Args:
+            context: Key/value pairs injected into the user prompt.
+            feedback: Optional reviewer feedback from a prior rejected attempt.
+
+        Returns:
+            The raw planning text output from the LLM.
+        """
+        return self._invoke(context, mode="plan", feedback=feedback)
+
+    def execute(
+        self,
+        context: dict[str, str],
+        plan: str,
+        *,
+        auto_approve: bool = True,
+        feedback: str | None = None,
+    ) -> str:
+        """Execute the agent in implementation mode.
+
+        Args:
+            context: Key/value pairs injected into the user prompt.
+            plan: The approved implementation plan to execute.
+            auto_approve: Whether the backend should use auto-approve execution mode when supported.
+            feedback: Optional reviewer feedback from a prior rejected attempt.
+
+        Returns:
+            The raw execution text output from the LLM.
+        """
+        return self._invoke(
+            context,
+            mode="execute",
+            feedback=feedback,
+            plan=plan,
+            auto_approve=auto_approve,
+        )
