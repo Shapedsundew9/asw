@@ -11,11 +11,7 @@ from pathlib import Path
 from asw.company import hash_file
 from asw.git import GitError, is_git_repo, repo_root
 from asw.linters.json_lint import validate_phase_task_mapping
-from asw.linters.markdown import (
-    extract_markdown_section_body,
-    validate_markdown_list_section,
-    validate_sections,
-)
+from asw.linters.markdown import extract_markdown_section_body, validate_markdown_list_section, validate_sections
 
 logger = logging.getLogger("asw.phase_preparation")
 
@@ -44,7 +40,8 @@ _DANGEROUS_SCRIPT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"rm\s+-rf\s+(?:\$PWD|\./|/|/workspaces/|\.git\b|\.company\b|src\b|docs\b|tests\b)",
+            r"rm\s+-rf\s+(?:\$PWD\b|/\b|/workspaces/\b|\./(?:src|docs|tests|\.git|\.company)\b|"
+            r"\.git\b|\.company\b|src\b|docs\b|tests\b)",
             re.IGNORECASE,
         ),
         "Setup scripts must not delete repository-controlled paths.",

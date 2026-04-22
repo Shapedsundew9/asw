@@ -144,6 +144,18 @@ def test_lint_devops_proposal_rejects_git_commands() -> None:
     assert any("git commands" in error for error in errors)
 
 
+def test_lint_devops_proposal_allows_deleting_untracked_workspace_path() -> None:
+    """Removing an untracked workspace path should not trip the repo-path safety guard."""
+    proposal = _VALID_DEVOPS_PROPOSAL.replace(
+        'if [[ ! -d ".venv" ]]; then\n  python3 -m venv .venv\nfi\n',
+        "rm -rf ./.venv\npython3 -m venv .venv\n",
+    )
+
+    errors, _ = lint_devops_proposal(proposal)
+
+    assert not any("delete repository-controlled paths" in error for error in errors)
+
+
 def test_render_setup_summary_references_generated_script_path(tmp_path: Path) -> None:
     """The rendered setup summary should point reviewers at the generated script."""
     script_path = tmp_path / ".devcontainer" / "phase_01_setup.sh"

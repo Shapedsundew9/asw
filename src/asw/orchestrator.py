@@ -567,7 +567,7 @@ def _agent_loop(
             phase_name,
             string_checksum_prefix(output),
         )
-        print(f"   Complete: {_agent_status_message(agent.name, phase_name)}.")
+        print(f"   Response received: {_agent_status_message(agent.name, phase_name)}.")
 
         errors = lint_fn(output)
         if not errors:
@@ -1050,7 +1050,8 @@ def _phase_design_request(phase_data: dict, team_entries: list[dict], *, harmoni
         "  ]\n"
         "}\n"
         "```\n\n"
-        "Every task object must include a depends_on array. Use [] when a task has no prerequisites.\n\n"
+        "The depends_on array is optional for each task object and defaults to [] when omitted. "
+        "Use [] when a task has no prerequisites.\n\n"
         "## Required Tooling\n"
         "- List every tool, package, or environment prerequisite needed for this phase. "
         "Use '- None.' if no tooling changes are required.\n\n"
