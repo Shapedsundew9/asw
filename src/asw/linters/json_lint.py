@@ -17,6 +17,7 @@ _REQUIRED_KEYS = (
 )
 
 _FILENAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
+_TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str]) -> None:
@@ -226,4 +227,72 @@ def validate_execution_plan(content: str) -> list[str]:
     _validate_deferred_items(data, errors)
 
     _validate_founder_questions(data, errors)
+    return errors
+
+
+def validate_phase_task_mapping(  # pylint: disable=too-many-branches,too-many-locals
+    content: str,
+    *,
+    allowed_roles: set[str] | None = None,
+) -> list[str]:
+    """Validate the JSON task mapping embedded in a phase design artifact."""
+    errors: list[str] = []
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        errors.append(f"Invalid JSON: {exc}")
+        return errors
+
+    if not isinstance(data, dict):
+        errors.append(f"Expected a JSON object at top level, got {type(data).__name__}.")
+        return errors
+
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        errors.append("tasks: must be a non-empty array.")
+        return errors
+
+    seen_ids: set[str] = set()
+    discovered_ids: list[str] = []
+
+    for idx, task in enumerate(tasks):
+        prefix = f"tasks[{idx}]"
+        if not isinstance(task, dict):
+            errors.append(f"{prefix}: must be an object.")
+            continue
+
+        _expect_non_empty_string(task, "id", prefix, errors)
+        _expect_non_empty_string(task, "title", prefix, errors)
+        _expect_non_empty_string(task, "owner", prefix, errors)
+        _expect_non_empty_string(task, "objective", prefix, errors)
+        _expect_string_list(task, "depends_on", prefix, errors, allow_empty=True)
+        _expect_string_list(task, "deliverables", prefix, errors)
+        _expect_string_list(task, "acceptance_criteria", prefix, errors)
+
+        task_id = task.get("id")
+        if isinstance(task_id, str) and task_id.strip():
+            if not _TASK_ID_RE.match(task_id):
+                errors.append(f"{prefix}.id: must match lowercase_underscore format.")
+            elif task_id in seen_ids:
+                errors.append(f"{prefix}.id: duplicate task id '{task_id}'.")
+            else:
+                seen_ids.add(task_id)
+                discovered_ids.append(task_id)
+
+        owner = task.get("owner")
+        if allowed_roles and isinstance(owner, str) and owner.strip() and owner not in allowed_roles:
+            errors.append(f"{prefix}.owner: '{owner}' is not present in the current phase team.")
+
+    valid_ids = set(discovered_ids)
+    for idx, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            continue
+        depends_on = task.get("depends_on")
+        if not isinstance(depends_on, list):
+            continue
+        for dep_idx, dependency in enumerate(depends_on):
+            if isinstance(dependency, str) and dependency and dependency not in valid_ids:
+                errors.append(f"tasks[{idx}].depends_on[{dep_idx}]: unknown task id '{dependency}'.")
+
     return errors

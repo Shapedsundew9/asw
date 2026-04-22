@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from pathlib import Path
 from asw.agents.base import Agent
 from asw.company import (
     clear_company,
+    hash_file,
     init_company,
     mark_phase_complete,
     new_pipeline_state,
@@ -33,13 +35,24 @@ from asw.founder_questions import (
     _extract_founder_questions,
     _render_founder_question_section,
 )
-from asw.gates import FounderReviewResult, founder_review
+from asw.gates import FounderReviewResult, founder_approve_devops_execution, founder_review
 from asw.git import GitError, commit_state, is_git_repo
 from asw.hiring import _expected_role_paths, _lint_roster, _write_roster
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
 from asw.llm.errors import LLMInvocationError
+from asw.phase_preparation import (
+    PhaseArtifactPaths,
+    build_phase_artifact_paths,
+    extract_markdown_list_items,
+    find_tracked_file_mutations,
+    lint_devops_proposal,
+    lint_phase_design,
+    lint_phase_feedback,
+    render_setup_summary,
+    snapshot_tracked_repo_files,
+)
 from asw.pipeline import PipelineExecutionContext, PipelineRunOptions, string_checksum_prefix
 
 _MAX_RETRIES = 2
@@ -900,6 +913,586 @@ def _run_role_generation(
     print(f"\n✓ Generated {total} role file(s)")
 
 
+def _phase_loop_state_name(phase_id: str, step: str) -> str:
+    """Return the pipeline-state key for a phase-loop *step*."""
+    return f"phase-loop:{phase_id}:{step}"
+
+
+def _phase_label(phase_data: dict, phase_index: int) -> str:
+    """Return a human-readable label for an execution-plan phase."""
+    phase_id = phase_data.get("id", f"phase_{phase_index + 1}")
+    phase_name = phase_data.get("name", f"Phase {phase_index + 1}")
+    return f"{phase_id} - {phase_name}"
+
+
+def _write_text_artifact(path: Path, content: str) -> None:
+    """Write *content* to *path*, creating parent directories when needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _phase_team_entries(roster_json: str, phase_data: dict) -> list[dict]:
+    """Return the roster entries assigned to *phase_data*."""
+    roster = json.loads(roster_json)
+    hired_agents = roster.get("hired_agents", [])
+    by_title = {
+        entry["title"]: entry
+        for entry in hired_agents
+        if isinstance(entry, dict) and isinstance(entry.get("title"), str)
+    }
+
+    entries: list[dict] = []
+    for title in phase_data.get("selected_team_roles", []):
+        entry = by_title.get(title)
+        if entry is None:
+            msg = f"Phase references role '{title}' but roster.json does not contain that role."
+            raise RuntimeError(msg)
+        entries.append(entry)
+    return entries
+
+
+def _phase_role_paths(company: Path, team_entries: list[dict]) -> list[Path]:
+    """Return the current role prompt paths for *team_entries*."""
+    paths: list[Path] = []
+    for entry in team_entries:
+        filename = entry.get("filename")
+        if isinstance(filename, str) and filename:
+            paths.append(company / "roles" / filename)
+    return paths
+
+
+def _phase_design_request(phase_data: dict, team_entries: list[dict], *, harmonized: bool) -> str:
+    """Return the prompt instructions for a phase design artifact."""
+    phase_name = phase_data.get("name", phase_data.get("id", "Current Phase"))
+    role_titles = ", ".join(entry["title"] for entry in team_entries)
+    mode = (
+        "Produce the harmonized final phase design."
+        if harmonized
+        else "Produce the initial phase design draft."
+    )
+    return (
+        f"{mode}\n"
+        f"The current phase is '{phase_name}'. Return Markdown only using this exact structure:\n\n"
+        f"# Phase Design: {phase_name}\n\n"
+        "## Phase Summary\n"
+        "- Summarize the approved scope, the delivery objective, and the handoff boundary for this phase.\n\n"
+        "## Task Mapping\n"
+        "```json\n"
+        "{\n"
+        '  "tasks": [\n'
+        "    {\n"
+        '      "id": "task_one",\n'
+        '      "title": "Task title",\n'
+        f'      "owner": "One of: {role_titles}",\n'
+        '      "objective": "Why this task exists in this phase",\n'
+        '      "depends_on": ["optional_previous_task_id"],\n'
+        '      "deliverables": ["Concrete output"],\n'
+        '      "acceptance_criteria": ["How the team will know this task is done"]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "## Required Tooling\n"
+        "- List every tool, package, or environment prerequisite needed for this phase. "
+        "Use '- None.' if no tooling changes are required.\n\n"
+        "## Sequencing Notes\n"
+        "- Explain ordering, dependencies, and handoff expectations.\n\n"
+        "Keep task ids stable and ownership explicit. Do not assign work outside the approved phase team."
+    )
+
+
+def _phase_feedback_request(role_title: str) -> str:
+    """Return the prompt instructions for role-specific phase feedback."""
+    return (
+        f"Review the current phase design draft from the perspective of the '{role_title}' role. "
+        "Return Markdown only using the exact structure required by your role prompt. "
+        "Use '- None.' when a section has no material feedback."
+    )
+
+
+def _devops_proposal_request(phase_data: dict, script_path: Path) -> str:
+    """Return the prompt instructions for a DevOps setup proposal."""
+    phase_name = phase_data.get("name", phase_data.get("id", "Current Phase"))
+    return (
+        f"Produce a guarded DevOps setup proposal for '{phase_name}'. "
+        "Return Markdown only using this exact structure:\n\n"
+        f"# DevOps Setup Proposal: {phase_name}\n\n"
+        "## Execution Summary\n"
+        "Describe what the script will do and why those steps are necessary for this phase.\n\n"
+        "## Safety Notes\n"
+        "- List the operational safeguards, idempotency protections, and assumptions.\n"
+        "- Include '- None.' only if there are genuinely no extra safety notes.\n\n"
+        "## Repo Impact\n"
+        "- State what will change.\n"
+        "- State what will remain untouched.\n"
+        f"- The generated script will be written to {script_path}.\n\n"
+        "## Setup Script\n"
+        "```bash\n"
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "trap 'echo \"DevOps phase setup failed at line $LINENO while running: $BASH_COMMAND\" >&2' ERR\n"
+        "```\n\n"
+        "The script must stay non-interactive, idempotent where practical, must not invoke git, "
+        "and must not overwrite tracked repository files or existing DevContainer bootstrap files."
+    )
+
+
+def _run_phase_design_step(  # pylint: disable=too-many-arguments,too-many-locals
+    company: Path,
+    *,
+    vision_content: str,
+    prd_content: str,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+    phase_data: dict,
+    phase_index: int,
+    paths: PhaseArtifactPaths,
+    llm: LLMBackend,
+) -> str:
+    """Generate the draft, feedback, and final design artifacts for one phase."""
+    team_entries = _phase_team_entries(roster_json, phase_data)
+    allowed_roles = {entry["title"] for entry in team_entries}
+    phase_json = json.dumps(phase_data, indent=2)
+    team_briefs = json.dumps(team_entries, indent=2)
+    label = _phase_label(phase_data, phase_index)
+
+    development_lead = Agent(
+        name="Development Lead",
+        role_file=company / "roles" / "development_lead.md",
+        llm=llm,
+    )
+    draft_context = {
+        "phase_design_request": _phase_design_request(phase_data, team_entries, harmonized=False),
+        "vision": vision_content,
+        "prd": prd_content,
+        "architecture": architecture_json,
+        "execution_plan": execution_plan_json,
+        "current_phase": phase_json,
+        "phase_team_briefs": team_briefs,
+    }
+    draft = _agent_loop(
+        development_lead,
+        draft_context,
+        lambda content: lint_phase_design(content, allowed_roles=allowed_roles)[0],
+        f"{label} Design Draft",
+    )
+    _write_text_artifact(paths.draft_path, draft)
+    print(f"\n✓ Phase design draft written: {paths.draft_path}")
+
+    feedback_role_file = company / "roles" / "phase_feedback_reviewer.md"
+    feedback_blocks: list[str] = []
+    for entry in team_entries:
+        title = entry["title"]
+        role_path = company / "roles" / entry["filename"]
+        reviewer = Agent(name=f"{title} Feedback", role_file=feedback_role_file, llm=llm)
+        feedback = _agent_loop(
+            reviewer,
+            {
+                "phase_feedback_request": _phase_feedback_request(title),
+                "role_title": title,
+                "role_brief": json.dumps(entry, indent=2),
+                "role_prompt": role_path.read_text(encoding="utf-8"),
+                "current_phase": phase_json,
+                "phase_design_draft": draft,
+            },
+            lint_phase_feedback,
+            f"{label} Feedback: {title}",
+        )
+        feedback_path = paths.feedback_path(title)
+        _write_text_artifact(feedback_path, feedback)
+        print(f"✓ Phase feedback written: {feedback_path}")
+        feedback_blocks.append(feedback)
+
+    final = _agent_loop(
+        development_lead,
+        {
+            **draft_context,
+            "phase_design_request": _phase_design_request(phase_data, team_entries, harmonized=True),
+            "phase_design_draft": draft,
+            "phase_feedback": "\n\n---\n\n".join(feedback_blocks),
+        },
+        lambda content: lint_phase_design(content, allowed_roles=allowed_roles)[0],
+        f"{label} Design Final",
+    )
+    _write_text_artifact(paths.final_path, final)
+    print(f"✓ Phase design final written: {paths.final_path}")
+    return final
+
+
+def _phase_design_input_paths(exec_ctx: PipelineExecutionContext, team_entries: list[dict]) -> list[Path]:
+    """Return tracked inputs for a phase design step."""
+    return [
+        exec_ctx.vision_path,
+        exec_ctx.company / "artifacts" / "prd.md",
+        exec_ctx.company / "artifacts" / "architecture.json",
+        exec_ctx.company / "artifacts" / "execution_plan.json",
+        exec_ctx.company / "artifacts" / "roster.json",
+        exec_ctx.company / "roles" / "development_lead.md",
+        exec_ctx.company / "roles" / "phase_feedback_reviewer.md",
+        *_phase_role_paths(exec_ctx.company, team_entries),
+    ]
+
+
+def _run_or_skip_phase_design_step(  # pylint: disable=too-many-arguments,too-many-locals
+    exec_ctx: PipelineExecutionContext,
+    *,
+    prd_content: str,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+    phase_data: dict,
+    phase_index: int,
+    paths: PhaseArtifactPaths,
+) -> str:
+    """Return the final design artifact for one phase, running it only when needed."""
+    phase_id = phase_data.get("id", f"phase_{phase_index + 1}")
+    phase_key = _phase_loop_state_name(phase_id, "design")
+    proposal_key = _phase_loop_state_name(phase_id, "devops-proposal")
+    execution_key = _phase_loop_state_name(phase_id, "devops-execution")
+    team_entries = _phase_team_entries(roster_json, phase_data)
+    output_paths = [
+        paths.draft_path,
+        paths.final_path,
+        *[paths.feedback_path(entry["title"]) for entry in team_entries],
+    ]
+    status = _evaluate_phase_status(
+        exec_ctx,
+        phase_key,
+        input_paths=_phase_design_input_paths(exec_ctx, team_entries),
+        output_paths=output_paths,
+    )
+    if status.is_current:
+        _print_skip_message(f"{_phase_label(phase_data, phase_index)} design", status)
+        return paths.final_path.read_text(encoding="utf-8")
+
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation(f"{_phase_label(phase_data, phase_index)} design", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved phase design artifacts despite tracked input changes.")
+                return paths.final_path.read_text(encoding="utf-8")
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason(f"{_phase_label(phase_data, phase_index)} design", status)
+
+    _clear_phase_markers(exec_ctx.workdir, exec_ctx.state, [proposal_key, execution_key])
+    final = _run_phase_design_step(
+        exec_ctx.company,
+        vision_content=exec_ctx.vision_content,
+        prd_content=prd_content,
+        architecture_json=architecture_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+        phase_data=phase_data,
+        phase_index=phase_index,
+        paths=paths,
+        llm=exec_ctx.llm,
+    )
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        phase_key,
+        input_paths=_phase_design_input_paths(exec_ctx, team_entries),
+        output_paths=output_paths,
+    )
+    return final
+
+
+def _devops_proposal_input_paths(exec_ctx: PipelineExecutionContext, paths: PhaseArtifactPaths) -> list[Path]:
+    """Return tracked inputs for a DevOps setup proposal."""
+    devcontainer_files = [
+        exec_ctx.workdir / ".devcontainer" / "post-create.sh",
+        exec_ctx.workdir / ".devcontainer" / "post-start.sh",
+        exec_ctx.workdir / ".devcontainer" / "devcontainer.json",
+    ]
+    return [paths.final_path, exec_ctx.company / "roles" / "devops_engineer.md", *devcontainer_files]
+
+
+def _run_devops_proposal_step(  # pylint: disable=too-many-arguments
+    company: Path,
+    *,
+    phase_data: dict,
+    phase_index: int,
+    final_design_content: str,
+    paths: PhaseArtifactPaths,
+    llm: LLMBackend,
+    founder_feedback: str | None = None,
+) -> str:
+    """Generate the DevOps setup proposal and extracted script for one phase."""
+    label = _phase_label(phase_data, phase_index)
+    devops_engineer = Agent(
+        name="DevOps Engineer",
+        role_file=company / "roles" / "devops_engineer.md",
+        llm=llm,
+    )
+    devcontainer_dir = company.parent / ".devcontainer"
+    post_create = devcontainer_dir / "post-create.sh"
+    post_start = devcontainer_dir / "post-start.sh"
+    devcontainer_json = devcontainer_dir / "devcontainer.json"
+    proposal = _agent_loop(
+        devops_engineer,
+        {
+            "devops_setup_request": _devops_proposal_request(phase_data, paths.script_path),
+            "current_phase": json.dumps(phase_data, indent=2),
+            "phase_design_final": final_design_content,
+            "required_tooling": "\n".join(
+                f"- {item}" for item in extract_markdown_list_items(final_design_content, "Required Tooling")
+            ),
+            "existing_post_create": post_create.read_text(encoding="utf-8") if post_create.is_file() else "(missing)",
+            "existing_post_start": post_start.read_text(encoding="utf-8") if post_start.is_file() else "(missing)",
+            "existing_devcontainer_json": (
+                devcontainer_json.read_text(encoding="utf-8") if devcontainer_json.is_file() else "(missing)"
+            ),
+        },
+        lambda content: lint_devops_proposal(content)[0],
+        f"{label} DevOps Proposal",
+        founder_feedback=founder_feedback,
+    )
+    _, script = lint_devops_proposal(proposal)
+    assert script is not None  # noqa: S101
+    _write_text_artifact(paths.proposal_path, proposal)
+    _write_text_artifact(paths.summary_path, render_setup_summary(proposal, paths.script_path))
+    _write_text_artifact(paths.script_path, script + "\n")
+    print(f"\n✓ DevOps setup proposal written: {paths.proposal_path}")
+    print(f"✓ DevOps setup summary written: {paths.summary_path}")
+    print(f"✓ DevOps setup script written: {paths.script_path}")
+    return proposal
+
+
+def _run_or_skip_devops_proposal_step(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_data: dict,
+    phase_index: int,
+    final_design_content: str,
+    paths: PhaseArtifactPaths,
+) -> str:
+    """Return the DevOps setup proposal, running it only when needed."""
+    phase_id = phase_data.get("id", f"phase_{phase_index + 1}")
+    phase_key = _phase_loop_state_name(phase_id, "devops-proposal")
+    execution_key = _phase_loop_state_name(phase_id, "devops-execution")
+    input_paths = _devops_proposal_input_paths(exec_ctx, paths)
+    output_paths = [paths.proposal_path, paths.summary_path, paths.script_path]
+    status = _evaluate_phase_status(exec_ctx, phase_key, input_paths=input_paths, output_paths=output_paths)
+    if status.is_current:
+        _print_skip_message(f"{_phase_label(phase_data, phase_index)} DevOps proposal", status)
+        return paths.proposal_path.read_text(encoding="utf-8")
+
+    if status.has_record:
+        if status.changed_inputs and not status.missing_outputs:
+            action = _prompt_phase_invalidation(f"{_phase_label(phase_data, phase_index)} DevOps proposal", status)
+            if action == "continue":
+                print("\n↩ Continuing with saved DevOps proposal artifacts despite tracked input changes.")
+                return paths.proposal_path.read_text(encoding="utf-8")
+            if action == "restart":
+                raise PipelineRestartRequested()
+        _print_rerun_reason(f"{_phase_label(phase_data, phase_index)} DevOps proposal", status)
+
+    _clear_phase_marker(exec_ctx.workdir, exec_ctx.state, execution_key)
+    proposal = _run_devops_proposal_step(
+        exec_ctx.company,
+        phase_data=phase_data,
+        phase_index=phase_index,
+        final_design_content=final_design_content,
+        paths=paths,
+        llm=exec_ctx.llm,
+    )
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, phase_key, input_paths=input_paths, output_paths=output_paths)
+    return proposal
+
+
+def _run_or_skip_devops_execution_step(  # pylint: disable=too-many-locals
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_data: dict,
+    phase_index: int,
+    final_design_content: str,
+    paths: PhaseArtifactPaths,
+) -> int | None:
+    """Run the Founder-gated DevOps setup script for one phase when needed."""
+    phase_id = phase_data.get("id", f"phase_{phase_index + 1}")
+    proposal_key = _phase_loop_state_name(phase_id, "devops-proposal")
+    execution_key = _phase_loop_state_name(phase_id, "devops-execution")
+    input_paths = [paths.proposal_path, paths.summary_path, paths.script_path]
+    status = _evaluate_phase_status(exec_ctx, execution_key, input_paths=input_paths, output_paths=[])
+    label = _phase_label(phase_data, phase_index)
+    if status.is_current:
+        _print_skip_message(f"{label} DevOps execution", status)
+        return None
+
+    if status.has_record:
+        _print_rerun_reason(f"{label} DevOps execution", status)
+
+    attempt = 1
+    while True:
+        approval = founder_approve_devops_execution(label, paths.proposal_path, script_path=paths.script_path)
+        if approval.action == "revise":
+            proposal = _run_devops_proposal_step(
+                exec_ctx.company,
+                phase_data=phase_data,
+                phase_index=phase_index,
+                final_design_content=final_design_content,
+                paths=paths,
+                llm=exec_ctx.llm,
+                founder_feedback=approval.feedback,
+            )
+            mark_phase_complete(
+                exec_ctx.workdir,
+                exec_ctx.state,
+                proposal_key,
+                input_paths=_devops_proposal_input_paths(exec_ctx, paths),
+                output_paths=[paths.proposal_path, paths.summary_path, paths.script_path],
+            )
+            logger.debug("Founder requested DevOps proposal revision; regenerated proposal (%s chars)", len(proposal))
+            continue
+
+        print(f"\n>> Executing approved DevOps script for {label} (attempt {attempt}/3)")
+        before_snapshot = snapshot_tracked_repo_files(exec_ctx.workdir)
+        result = subprocess.run(
+            ["bash", str(paths.script_path)],
+            cwd=exec_ctx.workdir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        after_snapshot = snapshot_tracked_repo_files(exec_ctx.workdir)
+        tracked_mutations = find_tracked_file_mutations(before_snapshot, after_snapshot)
+
+        log_lines = [
+            f"# DevOps Setup Attempt {attempt}",
+            "",
+            f"- Phase: {label}",
+            f"- Exit Code: {result.returncode}",
+            f"- Script: {paths.script_path}",
+            "",
+            "## STDOUT",
+            "",
+            "```text",
+            result.stdout,
+            "```",
+            "",
+            "## STDERR",
+            "",
+            "```text",
+            result.stderr,
+            "```",
+            "",
+        ]
+        if tracked_mutations:
+            log_lines.extend([
+                "## Tracked File Mutations",
+                "",
+                *[f"- {path}" for path in tracked_mutations],
+                "",
+            ])
+
+        attempt_log_path = paths.attempt_log_path(attempt)
+        _write_text_artifact(attempt_log_path, "\n".join(log_lines))
+        print(f"✓ DevOps attempt log written: {attempt_log_path}")
+
+        if tracked_mutations:
+            print("\nError: DevOps script modified tracked repository files outside the approved artifact boundary.")
+            for path in tracked_mutations:
+                print(f"  - {path}")
+            print("  → Stopping for human review instead of retrying automatically.")
+            return 1
+
+        if result.returncode == 0:
+            mark_phase_complete(
+                exec_ctx.workdir,
+                exec_ctx.state,
+                execution_key,
+                input_paths=input_paths,
+                output_paths=[],
+                metadata={
+                    "approved_proposal_checksum": hash_file(paths.proposal_path),
+                    "script_checksum": hash_file(paths.script_path),
+                    "attempts": attempt,
+                    "last_attempt_log": str(attempt_log_path),
+                },
+            )
+            print(f"✓ DevOps execution completed for {label}")
+            return None
+
+        if attempt >= 3:
+            print(f"\nError: DevOps setup failed for {label} after 3 approved attempts.", file=sys.stderr)
+            return 1
+
+        feedback = (
+            "Revise the DevOps setup proposal to address the failed execution log below. "
+            "Preserve the same safety constraints, keep the script non-interactive, and change only what is needed.\n\n"
+            f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        )
+        _run_devops_proposal_step(
+            exec_ctx.company,
+            phase_data=phase_data,
+            phase_index=phase_index,
+            final_design_content=final_design_content,
+            paths=paths,
+            llm=exec_ctx.llm,
+            founder_feedback=feedback,
+        )
+        mark_phase_complete(
+            exec_ctx.workdir,
+            exec_ctx.state,
+            proposal_key,
+            input_paths=_devops_proposal_input_paths(exec_ctx, paths),
+            output_paths=[paths.proposal_path, paths.summary_path, paths.script_path],
+        )
+        attempt += 1
+
+
+def _run_phase_preparation_loop(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    prd_content: str,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+) -> int | None:
+    """Run guarded phase-design and DevOps setup preparation for each phase."""
+    execution_plan = json.loads(execution_plan_json)
+    phases = execution_plan.get("phases", [])
+    if not isinstance(phases, list) or not phases:
+        return None
+
+    print("\n>> Phase preparation loop")
+    for phase_index, phase_data in enumerate(phases):
+        if not isinstance(phase_data, dict):
+            continue
+        label = _phase_label(phase_data, phase_index)
+        print(f"\n── Preparing {label} ──")
+        paths = build_phase_artifact_paths(exec_ctx.company, phase_index)
+        final_design = _run_or_skip_phase_design_step(
+            exec_ctx,
+            prd_content=prd_content,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+            phase_data=phase_data,
+            phase_index=phase_index,
+            paths=paths,
+        )
+        _run_or_skip_devops_proposal_step(
+            exec_ctx,
+            phase_data=phase_data,
+            phase_index=phase_index,
+            final_design_content=final_design,
+            paths=paths,
+        )
+        err = _run_or_skip_devops_execution_step(
+            exec_ctx,
+            phase_data=phase_data,
+            phase_index=phase_index,
+            final_design_content=final_design,
+            paths=paths,
+        )
+        if err is not None:
+            return err
+    return None
+
+
 def _run_or_skip_prd_phase(exec_ctx: PipelineExecutionContext) -> tuple[str, int | None]:
     """Return PRD content, running the phase only when needed."""
     prd_path = exec_ctx.company / "artifacts" / "prd.md"
@@ -1218,7 +1811,7 @@ def _init_pipeline_state(workdir: Path) -> tuple[dict, Path]:
     return state, company
 
 
-def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
+def _run_phases(exec_ctx: PipelineExecutionContext) -> int:  # pylint: disable=too-many-return-statements
     """Execute or skip each pipeline phase based on *state*."""
     prd_content, err = _run_or_skip_prd_phase(exec_ctx)
     if err is not None:
@@ -1238,6 +1831,16 @@ def _run_phases(exec_ctx: PipelineExecutionContext) -> int:
         return err
 
     err = _ensure_commit_complete(exec_ctx, "hiring")
+    if err is not None:
+        return err
+
+    err = _run_phase_preparation_loop(
+        exec_ctx,
+        prd_content=prd_content,
+        architecture_json=arch_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
     if err is not None:
         return err
 
@@ -1262,7 +1865,7 @@ def run_pipeline(
         options.restart,
     )
     print("=" * 72)
-    print("  AgenticOrg CLI – V0.2 Pipeline")
+    print("  AgenticOrg CLI – V0.3 Pipeline")
     print("=" * 72)
 
     # 0. Validate git repo early (unless commits are disabled).

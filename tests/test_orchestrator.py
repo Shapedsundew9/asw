@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from asw.company import init_company, new_pipeline_state, read_pipeline_state, snapshot_paths, write_pipeline_state
-from asw.gates import FounderReviewResult
+from asw.gates import ExecutionApprovalResult, FounderReviewResult
 from asw.git import GitError
 from asw.llm.errors import LLMInvocationError, TransientLLMError
 from asw.orchestrator import (
@@ -22,6 +22,7 @@ from asw.orchestrator import (
     _render_architecture_markdown,
     run_pipeline,
 )
+from asw.phase_preparation import PhaseArtifactPaths, build_phase_artifact_paths
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -310,7 +311,206 @@ Produce Python source files following PEP 8 with full type annotations and Googl
 - Under NO circumstances omit type annotations or docstrings.
 """
 
+_CANNED_PHASE_DESIGN_DRAFT = """\
+# Phase Design: Local Validation
+
+## Phase Summary
+- Deliver the first validated local workflow without expanding into hosted operations.
+
+## Task Mapping
+```json
+{
+    "tasks": [
+        {
+            "id": "prepare_environment",
+            "title": "Prepare the local validation environment",
+            "owner": "DevOps Engineer",
+            "objective": "Make the validated local toolchain available inside the repository workspace.",
+            "depends_on": [],
+            "deliverables": ["Guarded setup proposal and script"],
+            "acceptance_criteria": ["Required tooling is available without tracked repo mutations"]
+        },
+        {
+            "id": "implement_workflow",
+            "title": "Implement the local validation workflow",
+            "owner": "Python Backend Developer",
+            "objective": "Build the first validated local path for the approved scope.",
+            "depends_on": ["prepare_environment"],
+            "deliverables": ["Workflow code changes", "Backend tests"],
+            "acceptance_criteria": ["Founder can run the local workflow end to end"]
+        },
+        {
+            "id": "coordinate_readiness",
+            "title": "Coordinate implementation readiness",
+            "owner": "Development Lead",
+            "objective": "Keep the phase sequence, ownership, and completion boundaries explicit.",
+            "depends_on": ["prepare_environment", "implement_workflow"],
+            "deliverables": ["Harmonized phase design"],
+            "acceptance_criteria": ["Task ownership and sequencing are explicit for the full phase"]
+        }
+    ]
+}
+```
+
+## Required Tooling
+- Python virtual environment
+- pytest
+
+## Sequencing Notes
+- DevOps Engineer prepares the environment before implementation starts.
+- Python Backend Developer implements the approved local workflow after environment prep.
+- Development Lead keeps sequencing and acceptance boundaries aligned across the phase.
+"""
+
+_CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD = """\
+# Phase Feedback: Development Lead
+
+## Assessment
+- The draft keeps the phase limited to local validation and assigns clear ownership.
+
+## Dependencies
+- None.
+
+## Tooling Needs
+- None.
+
+## Risks
+- Keep environment preparation ahead of implementation so later tasks do not start on incomplete tooling.
+"""
+
+_CANNED_PHASE_FEEDBACK_DEVOPS = """\
+# Phase Feedback: DevOps Engineer
+
+## Assessment
+- The draft gives DevOps a clear first task and keeps the environment scope narrow.
+
+## Dependencies
+- None.
+
+## Tooling Needs
+- Python virtual environment
+- pytest
+
+## Risks
+- The setup script should avoid mutating tracked repository files in the self-hosted repo.
+"""
+
+_CANNED_PHASE_FEEDBACK_BACKEND = """\
+# Phase Feedback: Python Backend Developer
+
+## Assessment
+- The draft gives the backend role a concrete implementation target and a clear dependency on environment prep.
+
+## Dependencies
+- Environment preparation must finish before implementation begins.
+
+## Tooling Needs
+- pytest
+
+## Risks
+- The backend task should stay focused on the approved local workflow rather than deferred platform work.
+"""
+
+_CANNED_PHASE_DESIGN_FINAL = """\
+# Phase Design: Local Validation
+
+## Phase Summary
+- Deliver the first validated local workflow with explicit ownership, safe environment prep, and no hosted-scope expansion.
+
+## Task Mapping
+```json
+{
+    "tasks": [
+        {
+            "id": "prepare_environment",
+            "title": "Prepare the local validation environment",
+            "owner": "DevOps Engineer",
+            "objective": "Make the validated local toolchain available inside the repository workspace.",
+            "depends_on": [],
+            "deliverables": ["Guarded setup proposal and script"],
+            "acceptance_criteria": ["Required tooling is available without tracked repo mutations"]
+        },
+        {
+            "id": "implement_workflow",
+            "title": "Implement the local validation workflow",
+            "owner": "Python Backend Developer",
+            "objective": "Build the first validated local path for the approved scope.",
+            "depends_on": ["prepare_environment"],
+            "deliverables": ["Workflow code changes", "Backend tests"],
+            "acceptance_criteria": ["Founder can run the local workflow end to end"]
+        },
+        {
+            "id": "coordinate_readiness",
+            "title": "Coordinate implementation readiness",
+            "owner": "Development Lead",
+            "objective": "Keep the phase sequence, ownership, and completion boundaries explicit.",
+            "depends_on": ["prepare_environment", "implement_workflow"],
+            "deliverables": ["Harmonized phase design"],
+            "acceptance_criteria": ["Task ownership and sequencing are explicit for the full phase"]
+        }
+    ]
+}
+```
+
+## Required Tooling
+- Python virtual environment
+- pytest
+
+## Sequencing Notes
+- Environment preparation is Founder-gated and must complete before implementation begins.
+- Backend implementation stays within the approved local-validation boundary.
+- Development Lead maintains the approved sequence and acceptance boundaries.
+"""
+
+_CANNED_DEVOPS_PROPOSAL = """\
+# DevOps Setup Proposal: Local Validation
+
+## Execution Summary
+Prepare the local validation environment by ensuring the repository virtual environment exists and repository Python dependencies are installed without changing tracked source files.
+
+## Safety Notes
+- The script only creates or updates the local `.venv` environment.
+- The script does not invoke git or overwrite tracked repository files.
+
+## Repo Impact
+- Will create or update the local virtual environment and install Python dependencies into it.
+- Will not modify tracked files under `src/`, `docs/`, `tests/`, or existing `.devcontainer` bootstrap files.
+
+## Setup Script
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'echo "DevOps phase setup failed at line $LINENO while running: $BASH_COMMAND" >&2' ERR
+
+if [[ ! -d ".venv" ]]; then
+    python3 -m venv .venv
+fi
+
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+```
+"""
+
 _APPROVE_REVIEW = FounderReviewResult(action="approve")
+_APPROVE_EXECUTION = ExecutionApprovalResult(action="approve")
+_SUCCESSFUL_DEVOPS_EXECUTION = subprocess.CompletedProcess(
+    args=["bash", ".devcontainer/phase_01_setup.sh"],
+    returncode=0,
+    stdout="setup ok\n",
+    stderr="",
+)
+
+
+def _phase_preparation_responses() -> list[str]:
+    """Return canned LLM responses for the phase-preparation slice."""
+    return [
+    _CANNED_PHASE_DESIGN_DRAFT,
+    _CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD,
+    _CANNED_PHASE_FEEDBACK_DEVOPS,
+    _CANNED_PHASE_FEEDBACK_BACKEND,
+    _CANNED_PHASE_DESIGN_FINAL,
+    _CANNED_DEVOPS_PROPOSAL,
+    ]
 
 _CANNED_PRD_WITH_QUESTIONS = """\
 ## Executive Summary
@@ -467,7 +667,14 @@ def _make_mock_llm() -> MagicMock:
     """Create a mock LLM backend that returns canned responses for all phases."""
     mock = MagicMock()
     mock.invoke = MagicMock(
-        side_effect=[_CANNED_PRD, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+        side_effect=[
+            _CANNED_PRD,
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+            *_phase_preparation_responses(),
+        ]
     )
     return mock
 
@@ -496,6 +703,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
@@ -539,8 +748,23 @@ def test_full_pipeline(tmp_path: Path) -> None:
     # Verify pipeline state was written.
     state = read_pipeline_state(tmp_path)
     assert state is not None
-    for phase in ("prd", "architecture", "execution_plan", "roster", "roles"):
+    for phase in (
+        "prd",
+        "architecture",
+        "execution_plan",
+        "roster",
+        "roles",
+        "phase-loop:phase_1:design",
+        "phase-loop:phase_1:devops-proposal",
+        "phase-loop:phase_1:devops-execution",
+    ):
         assert phase in state["phases"]
+    phase_paths = build_phase_artifact_paths(company, 0)
+    assert phase_paths.draft_path.is_file()
+    assert phase_paths.final_path.is_file()
+    assert phase_paths.proposal_path.is_file()
+    assert phase_paths.summary_path.is_file()
+    assert phase_paths.script_path.is_file()
 
 
 def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path: Path) -> None:
@@ -551,7 +775,14 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
 
     mock_llm = MagicMock()
     mock_llm.invoke = MagicMock(
-        side_effect=[_CANNED_PRD_WITH_QUESTIONS, _CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE]
+        side_effect=[
+            _CANNED_PRD_WITH_QUESTIONS,
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+            *_phase_preparation_responses(),
+        ]
     )
 
     with (
@@ -568,15 +799,57 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
                 _APPROVE_REVIEW,
             ],
         ),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 11
 
     prd_content = (tmp_path / ".company" / "artifacts" / "prd.md").read_text(encoding="utf-8")
     assert "- Answer: PostgreSQL" in prd_content
     assert '"answer": "PostgreSQL"' in prd_content
+
+
+def test_devops_execution_revision_requires_reapproved_proposal(tmp_path: Path) -> None:
+    """A Founder revision request should regenerate the proposal before execution runs."""
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n")
+    _setup_git_repo(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke = MagicMock(
+        side_effect=[
+            _CANNED_PRD,
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+            *_phase_preparation_responses(),
+            _CANNED_DEVOPS_PROPOSAL,
+        ]
+    )
+
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch(
+            "asw.orchestrator.founder_approve_devops_execution",
+            side_effect=[
+                ExecutionApprovalResult(action="revise", feedback="Tighten the safety summary."),
+                _APPROVE_EXECUTION,
+            ],
+        ),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION) as mock_execute,
+    ):
+        result = run_pipeline(vision_path=vision, workdir=tmp_path)
+
+    assert result == 0
+    assert mock_llm.invoke.call_count == 12
+    bash_calls = [call for call in mock_execute.call_args_list if call.args and call.args[0][0] == "bash"]
+    assert len(bash_calls) == 1
+    assert "Tighten the safety summary." in mock_llm.invoke.call_args_list[-1].args[1]
 
 
 def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> None:
@@ -593,6 +866,7 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
             _CANNED_EXECUTION_PLAN_WITH_QUESTIONS,
             _CANNED_ROSTER,
             _CANNED_ROLE,
+            *_phase_preparation_responses(),
         ]
     )
 
@@ -618,11 +892,13 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
                 _APPROVE_REVIEW,
             ],
         ),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 11
 
     company = tmp_path / ".company" / "artifacts"
     assert '"answer": "Yes"' in (company / "architecture.json").read_text(encoding="utf-8")
@@ -646,6 +922,7 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
             _CANNED_EXECUTION_PLAN,
             _CANNED_ROSTER,
             _CANNED_ROLE,
+            *_phase_preparation_responses(),
         ]
     )
 
@@ -667,11 +944,13 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
                 _APPROVE_REVIEW,
             ],
         ),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 6
+    assert mock_llm.invoke.call_count == 12
 
     second_user_prompt = mock_llm.invoke.call_args_list[1].args[1]
     assert "### CURRENT_PRD" in second_user_prompt
@@ -738,6 +1017,7 @@ graph TD
             _CANNED_EXECUTION_PLAN,
             _CANNED_ROSTER,
             _CANNED_ROLE,
+            *_phase_preparation_responses(),
         ]
     )
 
@@ -763,11 +1043,13 @@ graph TD
                 _APPROVE_REVIEW,
             ],
         ),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 7
+    assert mock_llm.invoke.call_count == 13
     architecture_json = (tmp_path / ".company" / "artifacts" / "architecture.json").read_text(encoding="utf-8")
     assert '"question": "Do we need authentication in Phase 1?"' in architecture_json
     assert '"answer": "No"' in architecture_json
@@ -810,6 +1092,73 @@ def _build_state(
             "outputs": output_snapshot,
         }
     return state
+
+
+def _write_phase_preparation_artifacts(company: Path) -> PhaseArtifactPaths:
+    """Write canned phase-preparation artifacts for the first phase."""
+    paths = build_phase_artifact_paths(company, 0)
+    paths.draft_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.script_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.draft_path.write_text(_CANNED_PHASE_DESIGN_DRAFT, encoding="utf-8")
+    paths.feedback_path("Development Lead").write_text(_CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD, encoding="utf-8")
+    paths.feedback_path("DevOps Engineer").write_text(_CANNED_PHASE_FEEDBACK_DEVOPS, encoding="utf-8")
+    paths.feedback_path("Python Backend Developer").write_text(_CANNED_PHASE_FEEDBACK_BACKEND, encoding="utf-8")
+    paths.final_path.write_text(_CANNED_PHASE_DESIGN_FINAL, encoding="utf-8")
+    paths.proposal_path.write_text(_CANNED_DEVOPS_PROPOSAL, encoding="utf-8")
+    paths.summary_path.write_text(
+        "# DevOps Setup Summary\n\n- Generated script path: `.devcontainer/phase_01_setup.sh`\n",
+        encoding="utf-8",
+    )
+    paths.script_path.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\ntrap 'echo \"failed\" >&2' ERR\necho ready\n",
+        encoding="utf-8",
+    )
+    return paths
+
+
+def _phase_preparation_phase_specs(
+    workdir: Path,
+    company: Path,
+    vision: Path,
+) -> dict[str, tuple[list[Path], list[Path]]]:
+    """Return state specs for the first phase-preparation slice."""
+    paths = _write_phase_preparation_artifacts(company)
+    design_inputs = [
+        vision,
+        company / "artifacts" / "prd.md",
+        company / "artifacts" / "architecture.json",
+        company / "artifacts" / "execution_plan.json",
+        company / "artifacts" / "roster.json",
+        company / "roles" / "development_lead.md",
+        company / "roles" / "phase_feedback_reviewer.md",
+        company / "roles" / "development_lead.md",
+        company / "roles" / "devops_engineer.md",
+        company / "roles" / "python_backend_developer.md",
+    ]
+    proposal_inputs = [
+        paths.final_path,
+        company / "roles" / "devops_engineer.md",
+        workdir / ".devcontainer" / "post-create.sh",
+        workdir / ".devcontainer" / "post-start.sh",
+        workdir / ".devcontainer" / "devcontainer.json",
+    ]
+    return {
+        "phase-loop:phase_1:design": (
+            design_inputs,
+            [
+                paths.draft_path,
+                paths.feedback_path("Development Lead"),
+                paths.feedback_path("DevOps Engineer"),
+                paths.feedback_path("Python Backend Developer"),
+                paths.final_path,
+            ],
+        ),
+        "phase-loop:phase_1:devops-proposal": (
+            proposal_inputs,
+            [paths.proposal_path, paths.summary_path, paths.script_path],
+        ),
+        "phase-loop:phase_1:devops-execution": ([paths.proposal_path, paths.summary_path, paths.script_path], []),
+    }
 
 
 def test_is_phase_done_returns_false_when_no_state() -> None:
@@ -858,6 +1207,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     (company / "artifacts" / "roster.json").write_text(_extract_json_block(_CANNED_ROSTER), encoding="utf-8")
     (company / "artifacts" / "roster.md").write_text("# Roster", encoding="utf-8")
     (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+    phase_prep_specs = _phase_preparation_phase_specs(tmp_path, company, vision)
 
     state = _build_state(
         tmp_path,
@@ -898,6 +1248,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
                 ],
                 _expected_role_output_paths(company),
             ),
+            **phase_prep_specs,
         },
     )
     write_pipeline_state(tmp_path, state)
@@ -907,6 +1258,8 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
@@ -936,12 +1289,14 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
     # LLM was called because prd.md was missing, triggering all downstream phases.
-    assert mock_llm.invoke.call_count == 5  # All phases ran.
+    assert mock_llm.invoke.call_count == 11  # All phases ran.
     assert (company / "artifacts" / "prd.md").is_file()
 
 
@@ -956,6 +1311,8 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch(
             "asw.orchestrator.commit_state",
             side_effect=[GitError("commit failed"), "", "", "", ""],
@@ -972,7 +1329,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 11
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -990,6 +1347,8 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch(
             "asw.orchestrator.commit_state",
             side_effect=["", "", "", GitError("commit failed"), ""],
@@ -1006,7 +1365,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 11
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -1072,13 +1431,17 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
     write_pipeline_state(tmp_path, state)
 
     mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(return_value=_CANNED_ROLE)
+    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ROLE, *_phase_preparation_responses()])
 
-    with patch("asw.orchestrator.get_backend", return_value=mock_llm):
+    with (
+        patch("asw.orchestrator.get_backend", return_value=mock_llm),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
+    ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(no_commit=True))
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 1
+    assert mock_llm.invoke.call_count == 7
     assert (company / "roles" / "python_backend_developer.md").is_file()
 
 
@@ -1138,12 +1501,14 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(restart=True))
 
     assert result == 0
-    # All 5 LLM calls should have been made (no skipping).
-    assert mock_llm.invoke.call_count == 5
+    # All planning and phase-preparation LLM calls should have been made (no skipping).
+    assert mock_llm.invoke.call_count == 11
 
 
 def test_tracked_input_change_continue(tmp_path: Path) -> None:
@@ -1162,17 +1527,27 @@ def test_tracked_input_change_continue(tmp_path: Path) -> None:
     vision.write_text("# Vision v2\n\nUpdated vision.\n")
 
     mock_llm = _make_mock_llm()
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ARCH, _CANNED_EXECUTION_PLAN, _CANNED_ROSTER, _CANNED_ROLE])
+    mock_llm.invoke = MagicMock(
+        side_effect=[
+            _CANNED_ARCH,
+            _CANNED_EXECUTION_PLAN,
+            _CANNED_ROSTER,
+            _CANNED_ROLE,
+            *_phase_preparation_responses(),
+        ]
+    )
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch("builtins.input", return_value="c"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 4
+    assert mock_llm.invoke.call_count == 10
 
 
 def test_tracked_input_change_restart(tmp_path: Path) -> None:
@@ -1195,9 +1570,11 @@ def test_tracked_input_change_restart(tmp_path: Path) -> None:
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
         patch("asw.orchestrator.founder_review", return_value=_APPROVE_REVIEW),
+        patch("asw.orchestrator.founder_approve_devops_execution", return_value=_APPROVE_EXECUTION),
+        patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch("builtins.input", return_value="s"),
     ):
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 5
+    assert mock_llm.invoke.call_count == 11
