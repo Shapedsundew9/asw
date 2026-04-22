@@ -504,13 +504,14 @@ _SUCCESSFUL_DEVOPS_EXECUTION = subprocess.CompletedProcess(
 def _phase_preparation_responses() -> list[str]:
     """Return canned LLM responses for the phase-preparation slice."""
     return [
-    _CANNED_PHASE_DESIGN_DRAFT,
-    _CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD,
-    _CANNED_PHASE_FEEDBACK_DEVOPS,
-    _CANNED_PHASE_FEEDBACK_BACKEND,
-    _CANNED_PHASE_DESIGN_FINAL,
-    _CANNED_DEVOPS_PROPOSAL,
+        _CANNED_PHASE_DESIGN_DRAFT,
+        _CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD,
+        _CANNED_PHASE_FEEDBACK_DEVOPS,
+        _CANNED_PHASE_FEEDBACK_BACKEND,
+        _CANNED_PHASE_DESIGN_FINAL,
+        _CANNED_DEVOPS_PROPOSAL,
     ]
+
 
 _CANNED_PRD_WITH_QUESTIONS = """\
 ## Executive Summary

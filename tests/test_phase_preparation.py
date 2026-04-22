@@ -12,7 +12,6 @@ from asw.phase_preparation import (
     render_setup_summary,
 )
 
-
 _VALID_PHASE_DESIGN = """\
 # Phase Design: Local Validation
 
@@ -109,7 +108,7 @@ def test_lint_phase_design_rejects_missing_tooling_section() -> None:
 def test_lint_devops_proposal_rejects_git_commands() -> None:
     """Guarded DevOps proposals must reject repository git commands."""
     invalid_proposal = _VALID_DEVOPS_PROPOSAL.replace(
-        "if [[ ! -d \".venv\" ]]; then\n  python3 -m venv .venv\nfi\n",
+        'if [[ ! -d ".venv" ]]; then\n  python3 -m venv .venv\nfi\n',
         "git status\n",
     )
 

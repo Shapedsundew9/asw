@@ -965,11 +965,7 @@ def _phase_design_request(phase_data: dict, team_entries: list[dict], *, harmoni
     """Return the prompt instructions for a phase design artifact."""
     phase_name = phase_data.get("name", phase_data.get("id", "Current Phase"))
     role_titles = ", ".join(entry["title"] for entry in team_entries)
-    mode = (
-        "Produce the harmonized final phase design."
-        if harmonized
-        else "Produce the initial phase design draft."
-    )
+    mode = "Produce the harmonized final phase design." if harmonized else "Produce the initial phase design draft."
     return (
         f"{mode}\n"
         f"The current phase is '{phase_name}'. Return Markdown only using this exact structure:\n\n"
@@ -1380,12 +1376,14 @@ def _run_or_skip_devops_execution_step(  # pylint: disable=too-many-locals
             "",
         ]
         if tracked_mutations:
-            log_lines.extend([
-                "## Tracked File Mutations",
-                "",
-                *[f"- {path}" for path in tracked_mutations],
-                "",
-            ])
+            log_lines.extend(
+                [
+                    "## Tracked File Mutations",
+                    "",
+                    *[f"- {path}" for path in tracked_mutations],
+                    "",
+                ]
+            )
 
         attempt_log_path = paths.attempt_log_path(attempt)
         _write_text_artifact(attempt_log_path, "\n".join(log_lines))
