@@ -1863,15 +1863,14 @@ def _commit_implementation_turn(  # pylint: disable=too-many-arguments
     )
     if err is not None:
         return err
-    if commit_hash is None:
-        return None
+    recorded_commit_hash = "" if commit_hash is None else commit_hash
 
     commit_summary_path = paths.implementation_commit_path(turn.turn_index, turn.owner_title, attempt)
     commit_summary = _render_implementation_commit_artifact(
         phase_label,
         turn,
         approved_paths=approved_path_list,
-        commit_hash=commit_hash,
+        commit_hash=recorded_commit_hash,
     )
     _write_text_artifact(commit_summary_path, commit_summary)
     _record_implementation_turn_step(
@@ -1884,7 +1883,7 @@ def _commit_implementation_turn(  # pylint: disable=too-many-arguments
         metadata={
             "approved_paths": approved_path_list,
             "baseline_changed_paths": baseline_changed_paths,
-            "commit_hash": commit_hash,
+            "commit_hash": recorded_commit_hash,
         },
     )
     return None

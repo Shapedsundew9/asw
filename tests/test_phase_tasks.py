@@ -103,6 +103,7 @@ def test_render_phase_task_mapping_markdown_lists_ordered_tasks() -> None:
 
     assert "# Phase Task Mapping: phase_1 - Local Validation" in rendered
     assert "### 1. Prepare environment (`prepare_environment`)" in rendered
+    assert "- **Depends On:** None" in rendered
     assert "- **Depends On:** prepare_environment" in rendered
 
 

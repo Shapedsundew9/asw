@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from asw.linters.json_lint import validate_phase_task_mapping
@@ -132,11 +133,13 @@ def ordered_phase_tasks(task_mapping: dict[str, Any]) -> list[dict[str, Any]]:
             dependents[dependency].append(task_id)
             indegree[task_id] += 1
 
-    ready = sorted((task_id for task_id, degree in indegree.items() if degree == 0), key=original_index.__getitem__)
+    ready = deque(
+        sorted((task_id for task_id, degree in indegree.items() if degree == 0), key=original_index.__getitem__)
+    )
     ordered_ids: list[str] = []
 
     while ready:
-        task_id = ready.pop(0)
+        task_id = ready.popleft()
         ordered_ids.append(task_id)
         newly_ready: list[str] = []
         for dependent in dependents[task_id]:

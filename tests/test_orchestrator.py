@@ -1587,6 +1587,57 @@ def test_run_phase_implementation_loop_persists_no_op_commit_and_skips_it_on_rer
     assert second_result is None
 
 
+def test_run_phase_implementation_loop_persists_skipped_no_commit_and_skips_it_on_rerun(tmp_path: Path) -> None:
+    """The --no-commit path should still persist commit-step evidence for resume logic."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_review_payload("approve", summary="Scope and standards look good.")],
+    )
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        (tmp_path / "feature.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=True,
+    )
+
+    first_result = _run_phase_implementation_loop(
+        exec_ctx,
+        architecture_json=architecture_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+
+    assert first_result is None
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    commit_metadata = state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]
+    commit_summary = paths.implementation_commit_path(1, "Python Backend Developer", 1).read_text(encoding="utf-8")
+    assert commit_metadata["approved_paths"] == ["feature.py"]
+    assert commit_metadata["commit_hash"] == ""
+    assert "(no commit created)" in commit_summary
+
+    resumed_llm = MagicMock()
+    resumed_llm.invoke_plan.side_effect = AssertionError("plan should not rerun for a current --no-commit turn")
+    resumed_llm.invoke_execute.side_effect = AssertionError("execute should not rerun for a current --no-commit turn")
+    resumed_llm.invoke.side_effect = AssertionError("review should not rerun for a current --no-commit turn")
+    exec_ctx.llm = resumed_llm
+
+    second_result = _run_phase_implementation_loop(
+        exec_ctx,
+        architecture_json=architecture_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+
+    assert second_result is None
+
+
 def test_run_phase_implementation_loop_invalidates_downstream_turns_when_validation_contract_changes(  # pylint: disable=too-many-locals
     tmp_path: Path,
 ) -> None:
