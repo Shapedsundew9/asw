@@ -81,7 +81,6 @@ class Agent:
         plan: str | None = None,
     ) -> str:
         """Return the assembled user prompt for the current invocation."""
-
         parts: list[str] = []
         for key, value in context.items():
             parts.append(f"### {key.upper()}\n\n{value}")
@@ -108,7 +107,7 @@ class Agent:
 
         return user_prompt
 
-    def _invoke(
+    def _invoke(  # pylint: disable=too-many-arguments
         self,
         context: dict[str, str],
         *,

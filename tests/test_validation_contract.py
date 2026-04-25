@@ -45,8 +45,8 @@ def test_new_validation_contract_bootstraps_known_gaps() -> None:
     contract = new_validation_contract()
 
     assert contract["owner"] == "Development Lead"
-    assert contract["validations"] == []
-    assert contract["protected_behaviors"] == []
+    assert not contract["validations"]
+    assert not contract["protected_behaviors"]
     assert contract["known_gaps"]
 
 

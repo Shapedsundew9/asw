@@ -12,7 +12,7 @@ logger = logging.getLogger("asw.validation_runner")
 
 
 @dataclass(frozen=True)
-class ValidationCheckResult:
+class ValidationCheckResult:  # pylint: disable=too-many-instance-attributes
     """The execution result for one validation entry."""
 
     validation_id: str

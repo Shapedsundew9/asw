@@ -28,7 +28,7 @@ def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str
         errors.append(f"{prefix}.{key}: must be a non-empty string.")
 
 
-def _expect_string_list(
+def _expect_string_list(  # pylint: disable=too-many-arguments
     data: dict,
     key: str,
     prefix: str,

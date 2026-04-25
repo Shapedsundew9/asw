@@ -596,18 +596,54 @@ def _phase_preparation_responses() -> list[str]:
 def _implementation_plan_responses() -> list[str]:
     """Return canned planning responses for the implementation loop."""
     return [
-        """# Implementation Plan: phase_1 - Local Validation Turn 1\n\n## Task Summary\n- Prepare the local environment.\n\n## Planned Changes\n- Apply the approved environment updates for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
-        """# Implementation Plan: phase_1 - Local Validation Turn 2\n\n## Task Summary\n- Implement the approved local workflow.\n\n## Planned Changes\n- Apply the approved backend workflow changes for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
-        """# Implementation Plan: phase_1 - Local Validation Turn 3\n\n## Task Summary\n- Coordinate implementation readiness.\n\n## Planned Changes\n- Update the readiness documentation for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
+        (
+            "# Implementation Plan: phase_1 - Local Validation Turn 1\n\n"
+            "## Task Summary\n- Prepare the local environment.\n\n"
+            "## Planned Changes\n- Apply the approved environment updates for the turn.\n\n"
+            "## Validation Approach\n- Re-run the validation contract after execution.\n\n"
+            "## Risks\n- None.\n"
+        ),
+        (
+            "# Implementation Plan: phase_1 - Local Validation Turn 2\n\n"
+            "## Task Summary\n- Implement the approved local workflow.\n\n"
+            "## Planned Changes\n- Apply the approved backend workflow changes for the turn.\n\n"
+            "## Validation Approach\n- Re-run the validation contract after execution.\n\n"
+            "## Risks\n- None.\n"
+        ),
+        (
+            "# Implementation Plan: phase_1 - Local Validation Turn 3\n\n"
+            "## Task Summary\n- Coordinate implementation readiness.\n\n"
+            "## Planned Changes\n- Update the readiness documentation for the turn.\n\n"
+            "## Validation Approach\n- Re-run the validation contract after execution.\n\n"
+            "## Risks\n- None.\n"
+        ),
     ]
 
 
 def _implementation_execute_responses() -> list[str]:
     """Return canned execution responses for the implementation loop."""
     return [
-        """# Implementation Execution: phase_1 - Local Validation Turn 1\n\n## Completed Work\n- Completed the environment task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
-        """# Implementation Execution: phase_1 - Local Validation Turn 2\n\n## Completed Work\n- Completed the workflow task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
-        """# Implementation Execution: phase_1 - Local Validation Turn 3\n\n## Completed Work\n- Completed the readiness task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
+        (
+            "# Implementation Execution: phase_1 - Local Validation Turn 1\n\n"
+            "## Completed Work\n- Completed the environment task.\n\n"
+            "## Files Changed\n- None.\n\n"
+            "## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n"
+            "## Follow-Up\n- None.\n"
+        ),
+        (
+            "# Implementation Execution: phase_1 - Local Validation Turn 2\n\n"
+            "## Completed Work\n- Completed the workflow task.\n\n"
+            "## Files Changed\n- None.\n\n"
+            "## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n"
+            "## Follow-Up\n- None.\n"
+        ),
+        (
+            "# Implementation Execution: phase_1 - Local Validation Turn 3\n\n"
+            "## Completed Work\n- Completed the readiness task.\n\n"
+            "## Files Changed\n- None.\n\n"
+            "## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n"
+            "## Follow-Up\n- None.\n"
+        ),
     ]
 
 
@@ -1005,7 +1041,7 @@ def _make_single_turn_non_git_exec_ctx(
     return exec_ctx, architecture_json, execution_plan_json, roster_json, paths
 
 
-def _review_payload(
+def _review_payload(  # pylint: disable=too-many-arguments
     decision: str,
     *,
     summary: str,
@@ -1154,7 +1190,9 @@ def test_run_phase_implementation_loop_retries_when_validation_fails(tmp_path: P
     mock_commit.assert_called_once()
 
 
-def test_run_phase_implementation_loop_persists_turn_step_metadata(tmp_path: Path) -> None:
+def test_run_phase_implementation_loop_persists_turn_step_metadata(  # pylint: disable=too-many-locals
+    tmp_path: Path,
+) -> None:
     """A successful turn should persist the expected metadata for each saved step."""
     mock_llm = _configure_mock_llm(
         MagicMock(),
@@ -1549,7 +1587,7 @@ def test_run_phase_implementation_loop_persists_no_op_commit_and_skips_it_on_rer
     assert second_result is None
 
 
-def test_run_phase_implementation_loop_invalidates_downstream_turns_when_validation_contract_changes(
+def test_run_phase_implementation_loop_invalidates_downstream_turns_when_validation_contract_changes(  # pylint: disable=too-many-locals
     tmp_path: Path,
 ) -> None:
     """A changed validation contract should rerun the affected turn and later turns."""
@@ -1698,7 +1736,8 @@ def test_run_phase_implementation_loop_invalidates_downstream_turns_when_phase_d
     assert first_result is None
 
     paths.final_path.write_text(
-        "# Phase Design: Implementation Slice\n\n## Phase Summary\n- Deliver the current slice with updated sequencing guidance.\n",
+        "# Phase Design: Implementation Slice\n\n## Phase Summary\n"
+        "- Deliver the current slice with updated sequencing guidance.\n",
         encoding="utf-8",
     )
 
@@ -1864,7 +1903,7 @@ def test_run_phase_implementation_loop_invalidates_downstream_turns_when_assigne
     assert state["phases"]["phase-loop:phase_1:turn:2:commit"]["metadata"]["attempt"] == 2
 
 
-def test_resume_skips_current_phase_design_and_reruns_only_downstream_turns_after_standards_change(
+def test_resume_skips_current_phase_design_and_reruns_only_downstream_turns_after_standards_change(  # pylint: disable=too-many-locals,too-many-statements
     tmp_path: Path,
 ) -> None:
     """A saved phase design should skip while stale later-turn standards rerun only affected turns."""
@@ -1996,7 +2035,7 @@ def test_resume_skips_current_phase_design_and_reruns_only_downstream_turns_afte
     assert state["phases"]["phase-loop:phase_1:turn:3:commit"]["metadata"]["attempt"] == 2
 
 
-def test_full_pipeline(tmp_path: Path) -> None:
+def test_full_pipeline(tmp_path: Path) -> None:  # pylint: disable=too-many-locals
     """End-to-end: mock LLM + auto-approve → artifacts written."""
     # Write a minimal vision file.
     vision = tmp_path / "vision.md"

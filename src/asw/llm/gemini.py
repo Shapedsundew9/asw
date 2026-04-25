@@ -14,7 +14,7 @@ logger = logging.getLogger("asw.llm.gemini")
 
 _DEFAULT_TIMEOUT = 300  # seconds
 _PLAN_PROMPT_PREAMBLE = (
-    "MODE: PLAN\n" "Return a plan only. Do not describe completed execution or claim that files already changed.\n\n"
+    "MODE: PLAN\nReturn a plan only. Do not describe completed execution or claim that files already changed.\n\n"
 )
 _EXECUTE_PROMPT_PREAMBLE = (
     "MODE: EXECUTE\n"

@@ -520,7 +520,7 @@ def _agent_display_name(agent_name: str) -> str:
     return agent_name.removesuffix(" Feedback")
 
 
-def _agent_status_message(agent_name: str, phase_name: str) -> str:
+def _agent_status_message(agent_name: str, phase_name: str) -> str:  # pylint: disable=too-many-return-statements
     """Return a role-aware progress message for an agent invocation."""
     display_name = _agent_display_name(agent_name)
 
@@ -613,7 +613,7 @@ def _invoke_agent_plan_with_progress(
     )
 
 
-def _invoke_agent_execute_with_progress(
+def _invoke_agent_execute_with_progress(  # pylint: disable=too-many-arguments
     agent: Agent,
     context: dict[str, str],
     phase_name: str,
@@ -1488,7 +1488,7 @@ def _implementation_commit_output_paths(
     return [commit_summary_path, *changed_paths]
 
 
-def _implementation_turn_step_paths(
+def _implementation_turn_step_paths(  # pylint: disable=too-many-arguments
     exec_ctx: PipelineExecutionContext,
     paths: PhaseArtifactPaths,
     turn: PhaseImplementationTurn,
@@ -1624,7 +1624,7 @@ def _evaluate_implementation_turn_step_status(
     )
 
 
-def _record_implementation_turn_step(
+def _record_implementation_turn_step(  # pylint: disable=too-many-arguments
     exec_ctx: PipelineExecutionContext,
     *,
     phase_id: str,
@@ -1712,7 +1712,7 @@ def _validate_implementation_commit_scope(
     return None
 
 
-def _classify_implementation_turn_resume(
+def _classify_implementation_turn_resume(  # pylint: disable=too-many-return-statements,too-many-branches,too-many-locals
     exec_ctx: PipelineExecutionContext,
     *,
     phase_id: str,
@@ -1831,7 +1831,7 @@ def _classify_implementation_turn_resume(
     return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
 
 
-def _commit_implementation_turn(
+def _commit_implementation_turn(  # pylint: disable=too-many-arguments
     exec_ctx: PipelineExecutionContext,
     *,
     phase_id: str,
@@ -1953,7 +1953,7 @@ def _implementation_retry_feedback(review: dict[str, object], validation_report:
     return "\n".join(lines)
 
 
-def _run_development_lead_review(
+def _run_development_lead_review(  # pylint: disable=too-many-arguments,too-many-locals
     reviewer: Agent,
     *,
     phase_label: str,
@@ -2012,7 +2012,7 @@ def _run_development_lead_review(
     return None, 1
 
 
-def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-many-locals
+def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
     exec_ctx: PipelineExecutionContext,
     *,
     architecture_json: str,
@@ -2257,7 +2257,7 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
     return 1
 
 
-def _run_phase_implementation_loop(
+def _run_phase_implementation_loop(  # pylint: disable=too-many-locals
     exec_ctx: PipelineExecutionContext,
     *,
     architecture_json: str,
