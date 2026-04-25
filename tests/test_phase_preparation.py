@@ -78,6 +78,20 @@ def test_build_phase_artifact_paths_uses_stable_names(tmp_path: Path) -> None:
     assert paths.final_path.name == "01_design_final.md"
     assert paths.proposal_path.name == "01_setup_proposal.md"
     assert paths.summary_path.name == "01_setup_summary.md"
+    assert paths.task_mapping_json_path.name == "01_task_mapping.json"
+    assert paths.task_mapping_md_path.name == "01_task_mapping.md"
+    assert paths.implementation_plan_path(1, "Python Backend Developer", 2).name == (
+        "01_turn_01_python_backend_developer_attempt_2_plan.md"
+    )
+    assert paths.implementation_execution_path(1, "Python Backend Developer", 2).name == (
+        "01_turn_01_python_backend_developer_attempt_2_execute.md"
+    )
+    assert paths.implementation_validation_path(1, "Python Backend Developer", 2).name == (
+        "01_turn_01_python_backend_developer_attempt_2_validation.md"
+    )
+    assert paths.implementation_review_path(1, "Python Backend Developer", 2).name == (
+        "01_turn_01_python_backend_developer_attempt_2_review.md"
+    )
     assert paths.script_path == tmp_path / ".devcontainer" / "phase_01_setup.sh"
 
 
@@ -90,7 +104,8 @@ def test_lint_phase_design_accepts_valid_output() -> None:
 
     assert not errors
     assert task_mapping is not None
-    assert '"prepare_environment"' in task_mapping
+    assert task_mapping["tasks"][0]["id"] == "prepare_environment"
+    assert task_mapping["tasks"][0]["depends_on"] == []
 
 
 def test_lint_phase_design_accepts_missing_depends_on_for_root_task() -> None:
@@ -104,6 +119,7 @@ def test_lint_phase_design_accepts_missing_depends_on_for_root_task() -> None:
 
     assert not errors
     assert task_mapping is not None
+    assert task_mapping["tasks"][0]["depends_on"] == []
 
 
 def test_lint_phase_design_rejects_non_array_depends_on() -> None:

@@ -20,11 +20,16 @@ from asw.orchestrator import (
     _agent_loop,
     _init_pipeline_state,
     _is_phase_done,
+    _phase_design_input_paths,
     _render_architecture_markdown,
+    _run_or_skip_phase_design_step,
+    _run_phase_design_step,
     run_pipeline,
 )
 from asw.phase_preparation import PhaseArtifactPaths, build_phase_artifact_paths
-from asw.validation_contract import validation_contract_paths
+from asw.phase_tasks import write_phase_task_mapping
+from asw.pipeline import PipelineExecutionContext
+from asw.validation_contract import ensure_validation_contract, validation_contract_paths
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -843,6 +848,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
     phase_paths = build_phase_artifact_paths(company, 0)
     assert phase_paths.draft_path.is_file()
     assert phase_paths.final_path.is_file()
+    assert phase_paths.task_mapping_json_path.is_file()
+    assert phase_paths.task_mapping_md_path.is_file()
     assert phase_paths.proposal_path.is_file()
     assert phase_paths.summary_path.is_file()
     assert phase_paths.script_path.is_file()
@@ -1189,6 +1196,11 @@ def _write_phase_preparation_artifacts(company: Path) -> PhaseArtifactPaths:
     paths.feedback_path("DevOps Engineer").write_text(_CANNED_PHASE_FEEDBACK_DEVOPS, encoding="utf-8")
     paths.feedback_path("Python Backend Developer").write_text(_CANNED_PHASE_FEEDBACK_BACKEND, encoding="utf-8")
     paths.final_path.write_text(_CANNED_PHASE_DESIGN_FINAL, encoding="utf-8")
+    write_phase_task_mapping(
+        json.loads(_extract_json_block(_CANNED_PHASE_DESIGN_FINAL)),
+        paths,
+        phase_label="phase_1 - Local Validation",
+    )
     paths.proposal_path.write_text(_CANNED_DEVOPS_PROPOSAL, encoding="utf-8")
     paths.summary_path.write_text(
         "# DevOps Setup Summary\n\n- Generated script path: `.devcontainer/phase_01_setup.sh`\n",
@@ -1207,13 +1219,16 @@ def _phase_preparation_phase_specs(
     vision: Path,
 ) -> dict[str, tuple[list[Path], list[Path]]]:
     """Return state specs for the first phase-preparation slice."""
+    ensure_validation_contract(company)
     paths = _write_phase_preparation_artifacts(company)
+    validation_contract_json_path, _ = validation_contract_paths(company)
     design_inputs = [
         vision,
         company / "artifacts" / "prd.md",
         company / "artifacts" / "architecture.json",
         company / "artifacts" / "execution_plan.json",
         company / "artifacts" / "roster.json",
+        validation_contract_json_path,
         company / "roles" / "development_lead.md",
         company / "roles" / "phase_feedback_reviewer.md",
         company / "roles" / "development_lead.md",
@@ -1236,6 +1251,8 @@ def _phase_preparation_phase_specs(
                 paths.feedback_path("DevOps Engineer"),
                 paths.feedback_path("Python Backend Developer"),
                 paths.final_path,
+                paths.task_mapping_json_path,
+                paths.task_mapping_md_path,
             ],
         ),
         "phase-loop:phase_1:devops-proposal": (
@@ -1351,6 +1368,226 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     assert result == 0
     # LLM should NOT have been called – all phases were skipped.
     mock_llm.invoke.assert_not_called()
+
+
+def test_phase_design_input_paths_include_validation_contract(tmp_path: Path) -> None:
+    """Phase-design tracking should include the validation contract JSON artifact."""
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n", encoding="utf-8")
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=MagicMock(),
+        options=PipelineRunOptions(no_commit=True),
+    )
+    team_entries = json.loads(_extract_json_block(_CANNED_ROSTER))["hired_agents"]
+    input_paths = _phase_design_input_paths(exec_ctx, team_entries)
+    validation_contract_json_path, _ = validation_contract_paths(company)
+
+    assert validation_contract_json_path in input_paths
+
+
+def test_run_phase_design_step_includes_validation_contract_context_and_persists_task_mapping(tmp_path: Path) -> None:
+    """Phase-design generation should expose validation context and persist task-mapping artifacts."""
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+    paths = build_phase_artifact_paths(company, 0)
+    phase_data = json.loads(_extract_json_block(_CANNED_EXECUTION_PLAN))["phases"][0]
+    captured_contexts: dict[str, dict] = {}
+
+    def fake_agent_loop(_agent: MagicMock, context: dict, _lint_fn: MagicMock, label: str) -> str:
+        captured_contexts[label] = context
+        if label.endswith("Design Draft"):
+            return _CANNED_PHASE_DESIGN_DRAFT
+        if label.endswith("Feedback: Development Lead"):
+            return _CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD
+        if label.endswith("Feedback: DevOps Engineer"):
+            return _CANNED_PHASE_FEEDBACK_DEVOPS
+        if label.endswith("Feedback: Python Backend Developer"):
+            return _CANNED_PHASE_FEEDBACK_BACKEND
+        if label.endswith("Design Final"):
+            return _CANNED_PHASE_DESIGN_FINAL
+        raise AssertionError(f"Unexpected label: {label}")
+
+    with patch("asw.orchestrator._agent_loop", side_effect=fake_agent_loop):
+        final = _run_phase_design_step(
+            company,
+            vision_content="# Vision\n",
+            prd_content=_CANNED_PRD,
+            architecture_json=_extract_json_block(_CANNED_ARCH),
+            execution_plan_json=_extract_json_block(_CANNED_EXECUTION_PLAN),
+            roster_json=_extract_json_block(_CANNED_ROSTER),
+            phase_data=phase_data,
+            phase_index=0,
+            paths=paths,
+            llm=MagicMock(),
+        )
+
+    draft_context = captured_contexts["phase_1 - Local Validation Design Draft"]
+    assert final == _CANNED_PHASE_DESIGN_FINAL
+    assert "validation_contract_json" in draft_context
+    assert "validation_contract_markdown" in draft_context
+    assert "change_policy" in draft_context["validation_contract_json"]
+    assert paths.task_mapping_json_path.is_file()
+    assert paths.task_mapping_md_path.is_file()
+
+
+def test_run_or_skip_phase_design_step_backfills_task_mapping_without_llm_rerun(tmp_path: Path) -> None:
+    """Missing derived task-mapping artifacts should be regenerated locally from saved final design."""
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n", encoding="utf-8")
+    (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
+    (company / "artifacts" / "architecture.json").write_text(_extract_json_block(_CANNED_ARCH), encoding="utf-8")
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN),
+        encoding="utf-8",
+    )
+    roster_json = _extract_json_block(_CANNED_ROSTER)
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+    paths = build_phase_artifact_paths(company, 0)
+    paths.draft_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.draft_path.write_text(_CANNED_PHASE_DESIGN_DRAFT, encoding="utf-8")
+    paths.feedback_path("Development Lead").write_text(_CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD, encoding="utf-8")
+    paths.feedback_path("DevOps Engineer").write_text(_CANNED_PHASE_FEEDBACK_DEVOPS, encoding="utf-8")
+    paths.feedback_path("Python Backend Developer").write_text(_CANNED_PHASE_FEEDBACK_BACKEND, encoding="utf-8")
+    paths.final_path.write_text(_CANNED_PHASE_DESIGN_FINAL, encoding="utf-8")
+
+    phase_data = json.loads(_extract_json_block(_CANNED_EXECUTION_PLAN))["phases"][0]
+    team_entries = json.loads(roster_json)["hired_agents"]
+    validation_contract_json_path, _ = validation_contract_paths(company)
+    current_design_inputs = _phase_design_input_paths(
+        PipelineExecutionContext(
+            state=new_pipeline_state(),
+            company=company,
+            vision_path=vision,
+            vision_content=vision.read_text(encoding="utf-8"),
+            llm=MagicMock(),
+            options=PipelineRunOptions(no_commit=True),
+        ),
+        team_entries,
+    )
+    old_design_inputs = [path for path in current_design_inputs if path != validation_contract_json_path]
+    old_output_paths = [
+        paths.draft_path,
+        paths.final_path,
+        paths.feedback_path("Development Lead"),
+        paths.feedback_path("DevOps Engineer"),
+        paths.feedback_path("Python Backend Developer"),
+    ]
+    state = _build_state(
+        tmp_path,
+        {
+            "phase-loop:phase_1:design": (
+                old_design_inputs,
+                old_output_paths,
+            )
+        },
+    )
+    exec_ctx = PipelineExecutionContext(
+        state=state,
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=MagicMock(),
+        options=PipelineRunOptions(no_commit=True),
+    )
+
+    with patch("asw.orchestrator._run_phase_design_step") as mock_run_phase_design_step:
+        final = _run_or_skip_phase_design_step(
+            exec_ctx,
+            prd_content=_CANNED_PRD,
+            architecture_json=_extract_json_block(_CANNED_ARCH),
+            execution_plan_json=_extract_json_block(_CANNED_EXECUTION_PLAN),
+            roster_json=roster_json,
+            phase_data=phase_data,
+            phase_index=0,
+            paths=paths,
+        )
+
+    assert final == _CANNED_PHASE_DESIGN_FINAL
+    assert paths.task_mapping_json_path.is_file()
+    assert paths.task_mapping_md_path.is_file()
+    mock_run_phase_design_step.assert_not_called()
+
+
+def test_run_or_skip_phase_design_step_reruns_when_validation_contract_changes(tmp_path: Path) -> None:
+    """Recorded validation-contract changes should invalidate the saved phase design."""
+    company = init_company(tmp_path)
+    contract = ensure_validation_contract(company)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild a CLI tool.\n", encoding="utf-8")
+    (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
+    (company / "artifacts" / "architecture.json").write_text(_extract_json_block(_CANNED_ARCH), encoding="utf-8")
+    (company / "artifacts" / "execution_plan.json").write_text(
+        _extract_json_block(_CANNED_EXECUTION_PLAN),
+        encoding="utf-8",
+    )
+    roster_json = _extract_json_block(_CANNED_ROSTER)
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+    paths = _write_phase_preparation_artifacts(company)
+
+    phase_data = json.loads(_extract_json_block(_CANNED_EXECUTION_PLAN))["phases"][0]
+    team_entries = json.loads(roster_json)["hired_agents"]
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=MagicMock(),
+        options=PipelineRunOptions(no_commit=True),
+    )
+    state = _build_state(
+        tmp_path,
+        {
+            "phase-loop:phase_1:design": (
+                _phase_design_input_paths(exec_ctx, team_entries),
+                [
+                    paths.draft_path,
+                    paths.final_path,
+                    paths.feedback_path("Development Lead"),
+                    paths.feedback_path("DevOps Engineer"),
+                    paths.feedback_path("Python Backend Developer"),
+                    paths.task_mapping_json_path,
+                    paths.task_mapping_md_path,
+                ],
+            )
+        },
+    )
+    exec_ctx.state = state
+
+    validation_contract_json_path, _ = validation_contract_paths(company)
+    contract["summary"] = "Validation coverage changed after the saved phase design."
+    validation_contract_json_path.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
+
+    with (
+        patch(
+            "asw.orchestrator._run_phase_design_step",
+            return_value=_CANNED_PHASE_DESIGN_FINAL,
+        ) as mock_run_phase_design,
+        patch("builtins.input", return_value="r"),
+    ):
+        final = _run_or_skip_phase_design_step(
+            exec_ctx,
+            prd_content=_CANNED_PRD,
+            architecture_json=_extract_json_block(_CANNED_ARCH),
+            execution_plan_json=_extract_json_block(_CANNED_EXECUTION_PLAN),
+            roster_json=roster_json,
+            phase_data=phase_data,
+            phase_index=0,
+            paths=paths,
+        )
+
+    assert final == _CANNED_PHASE_DESIGN_FINAL
+    mock_run_phase_design.assert_called_once()
 
 
 def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:

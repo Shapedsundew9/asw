@@ -47,6 +47,7 @@ from asw.llm.errors import LLMInvocationError
 from asw.phase_preparation import (
     PhaseArtifactPaths,
     build_phase_artifact_paths,
+    extract_fenced_code_block,
     extract_markdown_list_items,
     find_tracked_file_mutations,
     lint_devops_proposal,
@@ -55,8 +56,14 @@ from asw.phase_preparation import (
     render_setup_summary,
     snapshot_tracked_repo_files,
 )
+from asw.phase_tasks import lint_phase_task_mapping_json, write_phase_task_mapping
 from asw.pipeline import PipelineExecutionContext, PipelineRunOptions, string_checksum_prefix
-from asw.validation_contract import ensure_validation_contract
+from asw.validation_contract import (
+    ensure_validation_contract,
+    load_validation_contract,
+    render_validation_contract_markdown,
+    validation_contract_paths,
+)
 
 _MAX_RETRIES = 2
 _REQUEST_MORE_QUESTIONS_FEEDBACK = (
@@ -1058,8 +1065,89 @@ def _phase_design_request(phase_data: dict, team_entries: list[dict], *, harmoni
         "Use '- None.' if no tooling changes are required.\n\n"
         "## Sequencing Notes\n"
         "- Explain ordering, dependencies, and handoff expectations.\n\n"
-        "Keep task ids stable and ownership explicit. Do not assign work outside the approved phase team."
+        "Use the current validation contract context when planning this phase. When a task changes product behavior, "
+        "capture the required validation coverage or an explicit known-gap update in the task deliverables or "
+        "acceptance criteria.\n\n"
+        "Keep task ids stable, task ownership explicit, and dependency order explicit. Do not assign work outside "
+        "the approved phase team."
     )
+
+
+def _phase_design_output_paths(paths: PhaseArtifactPaths, team_entries: list[dict]) -> list[Path]:
+    """Return tracked outputs for a phase design step."""
+    return [
+        paths.draft_path,
+        paths.final_path,
+        *[paths.feedback_path(entry["title"]) for entry in team_entries],
+        paths.task_mapping_json_path,
+        paths.task_mapping_md_path,
+    ]
+
+
+def _persist_phase_task_mapping_from_design(
+    phase_design_content: str,
+    *,
+    allowed_roles: set[str],
+    paths: PhaseArtifactPaths,
+    phase_label: str,
+) -> dict:
+    """Extract, validate, and persist the canonical task mapping from a final phase design."""
+    json_block = extract_fenced_code_block(phase_design_content, "json")
+    if json_block is None:
+        raise ValueError("No fenced ```json``` task-mapping block found in final phase design output.")
+
+    errors, task_mapping = lint_phase_task_mapping_json(json_block, allowed_roles=allowed_roles)
+    if errors or task_mapping is None:
+        raise ValueError(f"Invalid phase task mapping: {'; '.join(errors)}")
+
+    write_phase_task_mapping(task_mapping, paths, phase_label=phase_label)
+    print(f"✓ Phase task mapping written: {paths.task_mapping_json_path}")
+    print(f"✓ Phase task mapping summary written: {paths.task_mapping_md_path}")
+    return task_mapping
+
+
+def _sync_saved_phase_design_artifacts(  # pylint: disable=too-many-arguments,too-many-locals
+    exec_ctx: PipelineExecutionContext,
+    *,
+    status: PhaseStatus,
+    phase_key: str,
+    input_paths: list[Path],
+    output_paths: list[Path],
+    paths: PhaseArtifactPaths,
+    allowed_roles: set[str],
+    phase_label: str,
+) -> PhaseStatus:
+    """Backfill derived phase-design artifacts and refresh state for slice-3 migration cases."""
+    if not status.has_record or not paths.final_path.is_file():
+        return status
+
+    validation_contract_json_path, _ = validation_contract_paths(exec_ctx.company)
+    validation_input_keys = set(snapshot_paths(exec_ctx.workdir, [validation_contract_json_path]))
+    task_mapping_output_keys = set(
+        snapshot_paths(exec_ctx.workdir, [paths.task_mapping_json_path, paths.task_mapping_md_path])
+    )
+    changed_input_keys = set(status.changed_inputs)
+    output_drift = set(status.changed_outputs) | set(status.missing_outputs)
+
+    input_migration_only = not changed_input_keys or (
+        changed_input_keys.issubset(validation_input_keys)
+        and all(key not in status.recorded_inputs for key in changed_input_keys)
+    )
+    output_migration_only = not output_drift or output_drift.issubset(task_mapping_output_keys)
+    if not input_migration_only or not output_migration_only or not (changed_input_keys or output_drift):
+        return status
+
+    if output_drift:
+        final_design = paths.final_path.read_text(encoding="utf-8")
+        _persist_phase_task_mapping_from_design(
+            final_design,
+            allowed_roles=allowed_roles,
+            paths=paths,
+            phase_label=phase_label,
+        )
+
+    mark_phase_complete(exec_ctx.workdir, exec_ctx.state, phase_key, input_paths=input_paths, output_paths=output_paths)
+    return _evaluate_phase_status(exec_ctx, phase_key, input_paths=input_paths, output_paths=output_paths)
 
 
 def _phase_feedback_request(role_title: str) -> str:
@@ -1117,6 +1205,9 @@ def _run_phase_design_step(  # pylint: disable=too-many-arguments,too-many-local
     phase_json = json.dumps(phase_data, indent=2)
     team_briefs = json.dumps(team_entries, indent=2)
     label = _phase_label(phase_data, phase_index)
+    validation_contract = load_validation_contract(company) or ensure_validation_contract(company)
+    validation_contract_json = json.dumps(validation_contract, indent=2)
+    validation_contract_markdown = render_validation_contract_markdown(validation_contract)
 
     development_lead = Agent(
         name="Development Lead",
@@ -1131,6 +1222,8 @@ def _run_phase_design_step(  # pylint: disable=too-many-arguments,too-many-local
         "execution_plan": execution_plan_json,
         "current_phase": phase_json,
         "phase_team_briefs": team_briefs,
+        "validation_contract_json": validation_contract_json,
+        "validation_contract_markdown": validation_contract_markdown,
     }
     draft = _agent_loop(
         development_lead,
@@ -1178,17 +1271,20 @@ def _run_phase_design_step(  # pylint: disable=too-many-arguments,too-many-local
     )
     _write_text_artifact(paths.final_path, final)
     print(f"✓ Phase design final written: {paths.final_path}")
+    _persist_phase_task_mapping_from_design(final, allowed_roles=allowed_roles, paths=paths, phase_label=label)
     return final
 
 
 def _phase_design_input_paths(exec_ctx: PipelineExecutionContext, team_entries: list[dict]) -> list[Path]:
     """Return tracked inputs for a phase design step."""
+    validation_contract_json_path, _ = validation_contract_paths(exec_ctx.company)
     return [
         exec_ctx.vision_path,
         exec_ctx.company / "artifacts" / "prd.md",
         exec_ctx.company / "artifacts" / "architecture.json",
         exec_ctx.company / "artifacts" / "execution_plan.json",
         exec_ctx.company / "artifacts" / "roster.json",
+        validation_contract_json_path,
         exec_ctx.company / "roles" / "development_lead.md",
         exec_ctx.company / "roles" / "phase_feedback_reviewer.md",
         *_phase_role_paths(exec_ctx.company, team_entries),
@@ -1212,30 +1308,39 @@ def _run_or_skip_phase_design_step(  # pylint: disable=too-many-arguments,too-ma
     proposal_key = _phase_loop_state_name(phase_id, "devops-proposal")
     execution_key = _phase_loop_state_name(phase_id, "devops-execution")
     team_entries = _phase_team_entries(roster_json, phase_data)
-    output_paths = [
-        paths.draft_path,
-        paths.final_path,
-        *[paths.feedback_path(entry["title"]) for entry in team_entries],
-    ]
+    allowed_roles = {entry["title"] for entry in team_entries}
+    input_paths = _phase_design_input_paths(exec_ctx, team_entries)
+    output_paths = _phase_design_output_paths(paths, team_entries)
+    label = _phase_label(phase_data, phase_index)
     status = _evaluate_phase_status(
         exec_ctx,
         phase_key,
-        input_paths=_phase_design_input_paths(exec_ctx, team_entries),
+        input_paths=input_paths,
         output_paths=output_paths,
     )
+    status = _sync_saved_phase_design_artifacts(
+        exec_ctx,
+        status=status,
+        phase_key=phase_key,
+        input_paths=input_paths,
+        output_paths=output_paths,
+        paths=paths,
+        allowed_roles=allowed_roles,
+        phase_label=label,
+    )
     if status.is_current:
-        _print_skip_message(f"{_phase_label(phase_data, phase_index)} design", status)
+        _print_skip_message(f"{label} design", status)
         return paths.final_path.read_text(encoding="utf-8")
 
     if status.has_record:
         if status.changed_inputs and not status.missing_outputs:
-            action = _prompt_phase_invalidation(f"{_phase_label(phase_data, phase_index)} design", status)
+            action = _prompt_phase_invalidation(f"{label} design", status)
             if action == "continue":
                 print("\n↩ Continuing with saved phase design artifacts despite tracked input changes.")
                 return paths.final_path.read_text(encoding="utf-8")
             if action == "restart":
                 raise PipelineRestartRequested()
-        _print_rerun_reason(f"{_phase_label(phase_data, phase_index)} design", status)
+        _print_rerun_reason(f"{label} design", status)
 
     _clear_phase_markers(exec_ctx.workdir, exec_ctx.state, [proposal_key, execution_key])
     final = _run_phase_design_step(
@@ -1254,7 +1359,7 @@ def _run_or_skip_phase_design_step(  # pylint: disable=too-many-arguments,too-ma
         exec_ctx.workdir,
         exec_ctx.state,
         phase_key,
-        input_paths=_phase_design_input_paths(exec_ctx, team_entries),
+        input_paths=input_paths,
         output_paths=output_paths,
     )
     return final

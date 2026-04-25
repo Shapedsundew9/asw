@@ -1,172 +1,210 @@
-# Design Plan: Phase Implementation Loop (YOLO Mode + Dev Lead Review)
+# Design Plan: Slice 3 Task-Owner Driven Phase Planning
 
-## 1. Overview & Objectives
+## Objective
 
-We need to implement the core "Implementation Loop" for the SDLC pipeline within `src/asw/orchestrator.py`. This loop executes after the phase design and DevOps setup are completed.
+Slice 3 should promote the approved phase task mapping into a first-class orchestration input so later implementation slices run the work that was actually planned, in dependency order, by the approved task owners. The codebase already asks Development Lead to emit a structured `Task Mapping` JSON block inside each phase design, but orchestration currently validates that block and then discards it. The next slice should preserve and expose that structure rather than continuing to treat `selected_team_roles` as the implementation unit.
 
-**The flow for each phase:**
+## Current State
 
-1. Iterate sequentially through each role assigned to the phase.
-2. For each role, enter a `while True:` iteration loop.
-3. **Plan:** Prompt the role to generate an implementation plan using the Gemini CLI "plan" capability.
-4. **Execute:** Run the generated plan using the Gemini CLI "execute" capability in YOLO (Auto-Approve / Non-interactive) mode.
-5. **Review:** Gather the file mutations (git diff) and submit them to the **Development Lead** for review.
-6. **Evaluate:** - If the Dev Lead approves, break the loop, commit the role's work, and move to the next role.
-   - If the Dev Lead requests changes (deltas found against coding/testing standards or phase design), pass the feedback into the next iteration of the role's Plan/Execute steps.
+- `_phase_design_request()` already requires a `Task Mapping` JSON block with `id`, `title`, `owner`, `objective`, `depends_on`, `deliverables`, and `acceptance_criteria`.
+- `lint_phase_design()` already extracts that JSON block and `validate_phase_task_mapping()` already validates task ids, owners, and dependencies.
+- `_run_phase_design_step()` writes draft, feedback, and final Markdown artifacts, but it does not persist the approved task mapping as a separate machine-consumable artifact.
+- The broader implementation-loop design still assumes execution will iterate through `selected_team_roles`, which is now too coarse because the approved phase design already contains explicit task ownership and task ordering.
+- Slice 2 introduced `.company/artifacts/validation_contract.json` and `.company/artifacts/validation_contract.md`; slice 3 should treat that contract as part of phase planning context.
 
-## 2. LLM Backend & Agent Extensions (`src/asw/llm/gemini.py` & `src/asw/agents/base.py`)
+## Scope of Slice 3
 
-The orchestrator currently assumes a single `invoke` / `run` text-generation call. We need to expose the Gemini CLI's plan and execute capabilities.
+1. Persist a canonical per-phase task-mapping artifact derived from the approved final phase design.
+2. Add a helper surface that can load, order, and group phase tasks for later implementation slices.
+3. Include the current validation contract in phase-design planning context so task deliverables and acceptance criteria reflect validation or explicit gap updates when behavior changes.
+4. Backfill missing task-mapping artifacts locally from an existing final phase design so older runs do not need a fresh LLM phase-design pass just to gain the new artifact.
+5. Add focused tests around parsing, persistence, ordering, and the local backfill path.
 
-- **`GeminiCLIBackend` Updates:**
-  - Add an `invoke_plan(self, system_prompt: str, user_prompt: str) -> str` method. This should wrap the specific Gemini CLI command/flag used for planning.
-  - Add an `invoke_execute(self, plan: str, context: dict, auto_approve: bool = True) -> str` method. This wraps the Gemini CLI command for executing code changes, passing whatever flag triggers your "YOLO / auto-approve" mode.
-- **`Agent` Updates:**
-  - Add `plan(self, context: dict, feedback: str | None = None) -> str`.
-  - Add `execute(self, plan: str, auto_approve: bool = True) -> str`.
+Slice 3 should not execute tasks yet. It should only make approved task ownership and task order durable and reusable.
 
-## 3. Pipeline State Management (`src/asw/orchestrator.py`)
+## Core Decisions
 
-We must track the implementation state per-role to allow the pipeline to resume safely if interrupted.
+- The implementation unit becomes the approved task, not the raw role list from `selected_team_roles`.
+- Task owners remain role titles already present in `roster.json`; later slices should only run roles that actually own at least one approved task.
+- The canonical task-mapping JSON artifact should keep the same shape already used inside the phase-design Markdown block:
 
-- **State Keys:** Use the existing `_phase_loop_state_name` helper.
-  - Key format: `_phase_loop_state_name(phase_id, f"implement-{role_title}")`.
-- **Artifacts:** The outputs of this phase are the mutated source code files. Instead of tracking specific output files (which are dynamic), we will rely on git commits and the pipeline state dictionary to mark a role's implementation as `completed`.
-
-## 4. Orchestrator Logic (`src/asw/orchestrator.py`)
-
-### A. The Development Lead Review Linter
-
-Create a function to parse the Development Lead's review output. The prompt should force a JSON structure.
-
-```python
-def _lint_dev_lead_review(content: str) -> tuple[list[str], dict | None]:
-    # Extracts JSON block and validates it contains "status" ("approved" | "rejected") 
-    # and "feedback" (string).
-    pass
-```
-
-### B. The Role Implementation Step
-
-Create a new function `_run_role_implementation_loop(...)` that handles the inner iteration for a single role.
-
-```python
-def _run_role_implementation_loop(
-    exec_ctx: PipelineExecutionContext,
-    company: Path,
-    phase_data: dict,
-    role_entry: dict,
-    final_design_content: str,
-    architecture_json: str,
-    llm: LLMBackend,
-) -> None:
-    role_title = role_entry["title"]
-    agent = Agent(name=role_title, role_file=company / "roles" / role_entry["filename"], llm=llm)
-    
-    # Core Development Lead agent for review
-    dev_lead = Agent(name="Development Lead Reviewer", role_file=company / "roles" / "development_lead.md", llm=llm)
-    
-    feedback = None
-    attempt = 1
-    
-    while True:
-        # 1. PLAN
-        plan_context = {
-            "task": f"Implement your assigned tasks for phase: {phase_data.get('name')}",
-            "phase_design": final_design_content,
-            "architecture": architecture_json,
-            # include role-specific standards here
+```json
+{
+    "tasks": [
+        {
+            "id": "task_one",
+            "title": "Task title",
+            "owner": "Development Lead",
+            "objective": "Why this task exists in this phase",
+            "depends_on": [],
+            "deliverables": ["Concrete output"],
+            "acceptance_criteria": ["How the team will know this task is done"]
         }
-        plan = agent.plan(plan_context, feedback=feedback)
-        
-        # 2. EXECUTE (YOLO)
-        # Capture git hash/state before execution to compute the diff later
-        before_hash = get_current_git_head(exec_ctx.workdir) 
-        
-        print(f">> {role_title} executing code changes (YOLO mode)...")
-        agent.execute(plan, auto_approve=True)
-        
-        # 3. REVIEW PREPARATION
-        # Get the diff of what the agent actually changed
-        diff = get_git_diff(exec_ctx.workdir, since=before_hash)
-        
-        if not diff.strip():
-            print(f"⚠ {role_title} made no file changes. Prompting for retry.")
-            feedback = "Your execution resulted in no file changes. Please review the design and implement the required code."
-            attempt += 1
-            continue
-
-        # 4. DEV LEAD REVIEW
-        review_context = {
-            "review_request": (
-                "Review the provided git diff against the Phase Design and project coding standards. "
-                "Return a JSON object with 'status' ('approved' or 'rejected') and 'feedback'."
-            ),
-            "phase_design": final_design_content,
-            "agent_diff": diff,
-            "role_evaluated": role_title,
-        }
-        
-        review_output = _agent_loop(
-            dev_lead, 
-            review_context, 
-            lambda c: _lint_dev_lead_review(c)[0], 
-            f"Dev Lead Review: {role_title}"
-        )
-        _, review_json = _lint_dev_lead_review(review_output)
-        
-        # 5. EVALUATE
-        if review_json["status"] == "approved":
-            print(f"✓ Development Lead approved {role_title}'s implementation.")
-            # Commit the role's work to git here
-            _try_commit(exec_ctx.workdir, f"implementation-{role_title}", exec_ctx.options.no_commit, stage_all=True)
-            break
-        else:
-            print(f"↺ Development Lead requested changes for {role_title}.")
-            feedback = f"Development Lead Review Failed. Fix the following issues:\n{review_json['feedback']}"
-            
-            # Revert the working directory to `before_hash` so the agent tries again cleanly, 
-            # OR leave the files modified and let the agent fix them forward (Fix-forward is usually better for LLMs).
-            attempt += 1
+    ]
+}
 ```
 
-### C. Integrating into the Phase Loop
+- Slice 3 should not invent a second schema for the derived artifact. The phase-design JSON block and the persisted JSON artifact should stay structurally identical.
+- The final phase-design Markdown remains the human review artifact. The canonical task-mapping JSON and readable companion Markdown are derived from that approved design.
+- If a final design artifact already exists and only the derived task-mapping artifacts are missing, regenerate them locally instead of rerunning Development Lead.
+- The validation contract is planning input, not a new approval gate in this slice. Validation obligations should be expressed through task deliverables and acceptance criteria rather than through a brand-new task schema.
 
-Update `_run_phase_preparation_loop` (or rename it to `_run_phase_loop` since it now does implementation too).
+## Recommended Artifact Shape
 
-```python
-def _run_phase_loop(
-    exec_ctx: PipelineExecutionContext,
-    # ... other args ...
-):
-    for phase_index, phase_data in enumerate(phases):
-        # ... existing design and devops steps ...
-        
-        # --- NEW IMPLEMENTATION LOOP ---
-        team_entries = _phase_team_entries(roster_json, phase_data)
-        for role_entry in team_entries:
-            role_key = _phase_loop_state_name(phase_data.get("id"), f"implement-{role_entry['title']}")
-            
-            if _is_phase_done(exec_ctx.state, role_key, [], workdir=exec_ctx.workdir):
-                print(f"↩ Skipping {role_entry['title']} implementation (already completed)")
-                continue
-                
-            _run_role_implementation_loop(
-                exec_ctx,
-                company=exec_ctx.company,
-                phase_data=phase_data,
-                role_entry=role_entry,
-                final_design_content=final_design,
-                architecture_json=architecture_json,
-                llm=exec_ctx.llm
-            )
-            
-            mark_phase_complete(exec_ctx.workdir, exec_ctx.state, role_key, input_paths=[], output_paths=[])
-```
+Add two per-phase artifacts under `.company/artifacts/phases/`:
 
-## 5. Required Prompts & Templates
+- Canonical JSON: `<stem>_task_mapping.json`
+- Readable companion: `<stem>_task_mapping.md`
 
-Instruct the coding agent to add the following specific instructions to the Development Lead's evaluation payload:
+Examples for phase 1:
 
-- **Strict Review Criteria:** Ensure the Dev Lead explicitly checks testing coverage, syntax rules (from `.company/standards/`), and phase boundary compliance (did the agent build *more* than the phase design asked for?).
-- **JSON Format Requirement:** The Dev Lead must wrap their verdict in a
+- `.company/artifacts/phases/01_task_mapping.json`
+- `.company/artifacts/phases/01_task_mapping.md`
+
+The Markdown companion should summarize:
+
+- ordered tasks
+- owner assignments
+- dependency edges
+- deliverables
+- acceptance criteria
+
+The Markdown summary is derived only from the JSON artifact. The JSON artifact is derived only from the approved final phase design.
+
+## Recommended Helper Surface
+
+Add a dedicated helper module rather than growing `orchestrator.py` or `phase_preparation.py` with more parsing and ordering logic.
+
+Recommended module:
+
+- `src/asw/phase_tasks.py`
+
+Recommended functions:
+
+- `lint_phase_task_mapping_json(content: str, *, allowed_roles: set[str] | None = None) -> tuple[list[str], dict | None]`
+- `render_phase_task_mapping_markdown(task_mapping: dict, *, phase_label: str) -> str`
+- `write_phase_task_mapping(task_mapping: dict, paths: PhaseArtifactPaths, *, phase_label: str) -> None`
+- `load_phase_task_mapping(paths: PhaseArtifactPaths) -> dict | None`
+- `ordered_phase_tasks(task_mapping: dict) -> list[dict]`
+- `tasks_owned_by(task_mapping: dict, owner: str) -> list[dict]`
+
+Recommended path additions to `PhaseArtifactPaths`:
+
+- `task_mapping_json_path`
+- `task_mapping_md_path`
+
+## Orchestrator Changes
+
+### 1. Phase-design prompt and context
+
+Update the phase-design prompt so the Development Lead sees the current validation contract during planning.
+
+The prompt should explicitly instruct:
+
+- keep task ownership explicit
+- keep dependency order explicit
+- keep task ids stable across harmonization
+- when a task changes product behavior, capture the required validation coverage or explicit known-gap update in the task deliverables or acceptance criteria
+
+`_run_phase_design_step()` should include the current validation contract in the Development Lead context, preferably using the canonical JSON artifact and optionally the readable Markdown companion.
+
+### 2. Persist approved task mapping after final design
+
+After the final phase design passes linting, extract the approved JSON task-mapping block and write the two new derived artifacts locally.
+
+That means `_run_phase_design_step()` should do three things after writing the final design:
+
+1. extract the `Task Mapping` JSON block from the final design
+2. validate and parse it into canonical JSON
+3. write `<stem>_task_mapping.json` and `<stem>_task_mapping.md`
+
+### 3. Track derived artifacts in phase-design state
+
+The phase-design output set should now include the two task-mapping artifacts in addition to the draft, feedback, and final Markdown files.
+
+However, slice 3 should avoid forcing a new LLM run when the final design is already present and only the derived task-mapping artifacts are missing.
+
+Recommended handling:
+
+- before deciding a saved phase design is stale, try to backfill missing task-mapping artifacts from the existing final design locally
+- only rerun the Development Lead phase-design step when the final design itself is missing or when tracked inputs have genuinely changed
+
+This keeps the migration from slice 2 to slice 3 cheap and deterministic.
+
+### 4. Prepare the seam for later implementation slices
+
+Slice 3 does not run implementation, but it should give slice 4 a clean entry point.
+
+Later slices should be able to replace logic like:
+
+- iterate through `team_entries = _phase_team_entries(roster_json, phase_data)`
+
+with logic closer to:
+
+- load task mapping for the phase
+- order tasks by dependency
+- hand later slices the owner-specific task list and the roster entry for each owner
+
+`selected_team_roles` should remain important for phase design participation and feedback collection, but not as the future execution loop's primary unit of work.
+
+## Suggested Code Locations
+
+- `src/asw/phase_tasks.py`: canonical task-mapping helpers, persistence, ordering, and rendering
+- `src/asw/phase_preparation.py`: keep the Markdown-section extraction helper and `PhaseArtifactPaths`; extend paths for task-mapping artifacts
+- `src/asw/orchestrator.py`: pass validation-contract context into phase design, persist derived task-mapping artifacts, and backfill them on skip paths
+- `tests/test_phase_tasks.py`: new focused tests for parsing, persistence, owner grouping, and dependency ordering
+- `tests/test_orchestrator.py`: narrow regression proving backfill from an existing final design does not require a new LLM call
+
+## Relationship to Slice 2
+
+Slice 2 established the project-wide validation contract as a first-class artifact. Slice 3 should treat that contract as part of phase delivery planning.
+
+Concretely:
+
+- phase-design generation should read the current validation contract
+- task planning should account for validation additions or explicit coverage gaps when behavior changes
+- slice 3 should not execute validations yet
+
+This keeps planning aligned with the current regression boundary before slice 4 starts implementation execution.
+
+## Non-Goals for Slice 3
+
+- Do not implement the per-task Plan -> Execute loop yet.
+- Do not add Development Lead approval parsing for implementation diffs yet.
+- Do not change the execution-plan or roster schema.
+- Do not replace the final phase-design Markdown as the human review artifact.
+- Do not add validation evidence logs yet.
+
+## Risks and Mitigations
+
+- Risk: task mapping drifts from the final design.
+    Mitigation: derive task-mapping artifacts from the approved final design; never edit the Markdown companion directly.
+
+- Risk: dependency cycles only show up once implementation starts.
+    Mitigation: add explicit topological ordering with cycle detection in the new helper module.
+
+- Risk: slice 3 forces unnecessary phase-design reruns for existing runs.
+    Mitigation: backfill derived artifacts locally from an existing final design before invalidating the saved phase state.
+
+- Risk: later slices still execute by role instead of by approved task.
+    Mitigation: make the new task-loading and ordering helpers the only supported future seam for implementation orchestration.
+
+- Risk: validation contract is ignored during planning.
+    Mitigation: add it to Development Lead planning context and require validation obligations to appear in task deliverables or acceptance criteria.
+
+## Verification Plan for Slice 3
+
+- Unit test valid task-mapping parse and load helpers.
+- Unit test Markdown rendering for the derived task-mapping summary.
+- Unit test dependency ordering and cycle rejection.
+- Unit test owner filtering or grouping helpers.
+- Narrow orchestrator test that an existing final phase design can backfill missing task-mapping artifacts locally without another LLM phase-design call.
+- Narrow orchestrator test that the validation contract is included in the phase-design context for Development Lead.
+
+## Recommended Starting Point for the Next Session
+
+1. add `src/asw/phase_tasks.py` and `tests/test_phase_tasks.py`
+2. extend `PhaseArtifactPaths` with task-mapping artifact paths
+3. wire local extraction and persistence after final phase design
+4. add the local backfill path for saved phase designs missing only the new derived artifacts
+5. only after that, let later slices consume ordered tasks instead of `selected_team_roles`
