@@ -1,11 +1,14 @@
-#!/bin/bash
-# Run the company CLI test pipeline
-set -e
+#!/usr/bin/env bash
+# Run the company CLI test pipeline inside a disposable dev container.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPANY_DIR="$BASE_DIR/tests/test_company"
+PYTHON_BIN="$BASE_DIR/.venv/bin/python"
 
-mkdir -p "$COMPANY_DIR"
-echo "Running company tests..."
-asw start --vision "$BASE_DIR/tests/test_vision.md" --workdir "$COMPANY_DIR" --debug "$COMPANY_DIR/debug.log" --no-commit --restart
+if [[ ! -x "$PYTHON_BIN" ]]; then
+	PYTHON_BIN="${PYTHON:-python3}"
+fi
+
+echo "Running company tests in a disposable dev container..."
+exec "$PYTHON_BIN" -m asw.test_company_runner "$@"
