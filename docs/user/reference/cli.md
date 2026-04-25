@@ -8,30 +8,38 @@ This page documents the current `asw` command surface, supported flags, examples
 asw [-h] <command> ...
 ```
 
+`asw` currently exposes one subcommand: `start`.
+
 Use `asw <command> --help` to inspect command-specific flags.
 
-## Commands
+## `asw start`
 
-### `asw start`
-
-Start the agentic SDLC pipeline from a vision document.
+Start the pipeline from a vision document.
 
 ```bash
-asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--stage-all] [--restart] [--debug [LOGFILE]]
+asw start [-h] --vision VISION [--workdir WORKDIR] [--no-commit] [--stage-all] [--restart] [--execute-phase-setups] [--debug [LOGFILE]]
 ```
 
-#### Flags
+### Flags
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--vision VISION` | Yes | none | Path to the vision Markdown file. Relative and absolute paths both work. |
-| `--workdir WORKDIR` | No | current directory | Working directory where `.company/` is created and git operations run. |
-| `--no-commit` | No | off | Skip git commits at phase boundaries. Also skips the git-repository requirement. |
-| `--stage-all` | No | off | Stage the full git worktree during phase commits. Without this flag, `asw` stages only `.company/`. |
+| `--workdir WORKDIR` | No | current directory | Working directory where `.company/` is created and where git operations and validation commands run. |
+| `--no-commit` | No | off | Skip all git commits. This also removes the git-repository requirement. |
+| `--stage-all` | No | off | Stage the full git worktree during automatic commits instead of limiting staging to `.company/` and approved turn paths. |
 | `--restart` | No | off | Delete the existing `.company/` directory before starting the run. |
+| `--execute-phase-setups` | No | off | Opt into running generated `.devcontainer/phase_<N>_setup.sh` scripts after explicit founder approval. Without this flag, setup proposals and scripts are still generated but execution is recorded as deferred. |
 | `--debug [LOGFILE]` | No | off | Enable debug logging. If you omit `LOGFILE`, `asw` creates a timestamped log file in the current directory. If you pass a custom path, `asw` creates missing parent directories automatically. |
 
-#### Examples
+### Flag Notes
+
+- `--workdir` controls where `.company/` lives. It also controls the directory used for git checks, automatic commits, and validation-command execution.
+- `--stage-all` affects both major phase commits and implementation-turn commits. In implementation turns it intentionally bypasses the normal approved-path-only commit scope.
+- `--execute-phase-setups` is the dangerous execution path. Most runs leave it off and inspect the generated setup artifacts without executing them.
+- `--debug` only controls logging. It does not change retry behavior, gating, or state tracking.
+
+### Examples
 
 Run in the current directory using a local vision file:
 
@@ -51,7 +59,7 @@ Run without git commits:
 asw start --vision vision.md --no-commit
 ```
 
-Stage the full repository during phase commits:
+Stage the full repository during automatic commits:
 
 ```bash
 asw start --vision vision.md --stage-all
@@ -66,7 +74,7 @@ asw start --vision vision.md --debug
 Write debug logs to a specific file:
 
 ```bash
-asw start --vision vision.md --debug asw.log
+asw start --vision vision.md --debug logs/asw.log
 ```
 
 Discard the existing `.company/` state and rebuild from scratch:
@@ -75,33 +83,41 @@ Discard the existing `.company/` state and rebuild from scratch:
 asw start --vision vision.md --restart
 ```
 
+Opt into founder-approved setup-script execution:
+
+```bash
+asw start --vision vision.md --execute-phase-setups
+```
+
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Pipeline completed successfully, or the Founder stopped the pipeline at a review gate |
-| `1` | Startup validation failed, git commit failed, an artifact failed mechanical linting, or Gemini failed in a non-retryable or exhausted-retry state |
+| `1` | Startup validation failed, git commit failed, a generated artifact failed structural validation, a setup execution failed, or an implementation turn exhausted its retries |
 
-## Re-Runs And Saved State
+## What The Command Does
 
-`asw` stores pipeline progress in `.company/pipeline_state.json`.
+At a high level, `asw start`:
 
-On a later run:
+1. Validates startup requirements and reads the vision file
+2. Initializes `.company/` and bootstraps the validation contract
+3. Runs the PRD, architecture, and execution-plan founder gates
+4. Generates the roster and role prompts
+5. Prepares each execution-plan phase with design, task-mapping, and setup artifacts
+6. Runs implementation turns with validation and Development Lead review
 
-- `pipeline_state.json` records a tracked-file hash catalog plus per-phase input and output hash snapshots.
-- PRD, architecture, execution plan, roster, and role generation are skipped only when their saved snapshots still match the current tracked files.
-- If tracked inputs for a completed phase changed, `asw` stops at the earliest affected phase and lets you continue with saved artifacts, rerun that phase, or restart from scratch.
-- `--restart` bypasses saved state by deleting `.company/` before the run begins.
+The CLI banner for this flow is currently:
 
-When structural linting fails, `asw` also saves the rejected output under `.company/artifacts/failed/` before exiting.
-
-For a full explanation, see [Runs, State, and Recovery](runs-and-state.md).
+```text
+AgenticOrg CLI – V0.3 Pipeline
+```
 
 ## Environment Requirements
 
 - `gemini` must be installed and available on `PATH`.
 - `GEMINI_API_KEY` must be exported in the same shell session that runs `asw`.
-- Use an interactive terminal because Founder Review Gate actions and question prompts are menu-driven.
+- Use an interactive terminal because founder review and optional setup execution are menu-driven.
 - The working directory must be inside a git repository unless you pass `--no-commit`.
 
 Quick verification:
@@ -111,8 +127,19 @@ env | grep GEMINI_API_KEY
 gemini -p "Reply with OK" -o json
 ```
 
+## Re-Runs And Saved State
+
+`asw` stores pipeline progress in `.company/pipeline_state.json` and compares tracked inputs and outputs on later runs.
+
+- Completed planning phases are skipped only when their tracked files still match.
+- Phase-preparation steps and implementation turns are tracked too, not just the top-level planning phases.
+- If tracked inputs changed but saved outputs still exist, `asw` prompts you to continue, rerun, or restart at the earliest affected step.
+- `--restart` deletes `.company/` before the run begins.
+
+For the full behavior, see [Runs, State, and Recovery](runs-and-state.md).
+
 ## See Also
 
 - [Quickstart](../getting-started/quickstart.md) - a practical first run
-- [Key Concepts](concepts.md) - phases, review gates, and generated artifacts
-- [Runs, State, and Recovery](runs-and-state.md) - resume, restart, and debug behavior
+- [Key Concepts](concepts.md) - the model behind the phases, loops, and gates
+- [Runs, State, and Recovery](runs-and-state.md) - detailed resume, invalidation, and restart behavior

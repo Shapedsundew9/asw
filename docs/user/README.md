@@ -1,26 +1,30 @@
 # AgenticOrg CLI User Documentation
 
-Use these guides to install `asw`, run the V0.2 pipeline, and understand the artifacts and state it creates.
+Learn how to install `asw`, run the current pipeline, review its gates, and work safely with the generated workspace.
 
-`asw` orchestrates a simulated company of LLM-based agents that turns a vision document into a PRD, system architecture, a founder-reviewed execution plan, approved-team role briefs, and generated role prompts.
+`asw` orchestrates a simulated company of LLM-based agents. A run starts from a vision document, produces a PRD, architecture, and execution plan, expands the approved team into role prompts, bootstraps a validation contract, prepares per-phase delivery artifacts, and records implementation turns with validation and review evidence.
 
 ## Getting Started
 
 | Document | Description |
 |----------|-------------|
-| [Installation](getting-started/installation.md) | Prerequisites, install steps, and first-run verification |
-| [Quickstart](getting-started/quickstart.md) | Run your first complete pipeline and review each gate |
+| [Installation](getting-started/installation.md) | Prerequisites, Gemini setup, installation, and CLI verification |
+| [Quickstart](getting-started/quickstart.md) | First end-to-end run, founder gates, validation contract, and generated artifacts |
 
 ## Tutorials
 
 | Document | Description |
 |----------|-------------|
-| [First Complete Run](tutorials/first-project.md) | Guided walkthrough of PRD, architecture, execution planning, role briefs, and generated roles |
+| [First Complete Run](tutorials/first-project.md) | A realistic walkthrough covering planning, phase preparation, implementation turns, and reruns |
 
 ## Reference
 
 | Document | Description |
 |----------|-------------|
-| [CLI Reference](reference/cli.md) | All commands, flags, examples, and exit codes |
-| [Key Concepts](reference/concepts.md) | How phases, review gates, linting, commits, and generated roles fit together |
-| [Runs, State, and Recovery](reference/runs-and-state.md) | Resume behavior, vision changes, restarts, and debug logging |
+| [CLI Reference](reference/cli.md) | Command syntax, flags, examples, and exit codes |
+| [Key Concepts](reference/concepts.md) | Pipeline phases, founder gates, validation contracts, roles, and automatic commits |
+| [Runs, State, and Recovery](reference/runs-and-state.md) | Resume behavior, invalidation prompts, deferred setup execution, and recovery patterns |
+
+## What's Next
+
+Start with [Installation](getting-started/installation.md), then run [Quickstart](getting-started/quickstart.md). If you are reviewing what changed on this branch, [Key Concepts](reference/concepts.md) and [Runs, State, and Recovery](reference/runs-and-state.md) explain the biggest user-visible differences.
