@@ -55,6 +55,7 @@ After completing any documentation task, produce a **UX Issues** section at the 
 1. Explore the CLI and source code to identify friction points that would confuse or slow down a new user.
 2. Rate each issue **High / Medium / Low** based on how much it would hurt the user experience.
 3. Format the list as a Markdown table with columns: **Priority**, **Area**, **Issue**, **Suggested Improvement**.
+4. Store the list in `docs/branches/<branch-name>/ux_issues.md` for the current branch.
 
 Focus on observable behaviour (confusing error messages, missing feedback, unintuitive flags, undiscoverable features) rather than internal code quality.
 

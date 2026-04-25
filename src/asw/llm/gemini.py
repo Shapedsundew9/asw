@@ -13,6 +13,14 @@ from asw.llm.errors import LLMInvocationError, TransientLLMError
 logger = logging.getLogger("asw.llm.gemini")
 
 _DEFAULT_TIMEOUT = 300  # seconds
+_PLAN_PROMPT_PREAMBLE = (
+    "MODE: PLAN\nReturn a plan only. Do not describe completed execution or claim that files already changed.\n\n"
+)
+_EXECUTE_PROMPT_PREAMBLE = (
+    "MODE: EXECUTE\n"
+    "AUTO_APPROVE: {auto_approve}\n"
+    "Carry out the requested changes using the approved plan and report what happened concisely.\n\n"
+)
 
 
 def _checksum_prefix(content: str) -> str:
@@ -35,12 +43,31 @@ class GeminiCLIBackend:
 
     def invoke(self, system_prompt: str, user_prompt: str) -> str:
         """Run Gemini CLI with *system_prompt* + *user_prompt* and return the text response."""
-        combined_prompt = f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_prompt}"
+        return self._invoke_mode(system_prompt, user_prompt, mode="invoke")
 
-        cmd: list[str] = ["gemini", "-p", combined_prompt, "-o", "json"]
-        if self._model:
-            cmd.extend(["-m", self._model])
+    def invoke_plan(self, system_prompt: str, user_prompt: str) -> str:
+        """Run Gemini CLI in planning mode using prompt-level fallback instructions."""
+        planning_prompt = f"{_PLAN_PROMPT_PREAMBLE}{user_prompt}"
+        return self._invoke_mode(system_prompt, planning_prompt, mode="plan")
 
+    def invoke_execute(self, system_prompt: str, user_prompt: str, *, auto_approve: bool = True) -> str:
+        """Run Gemini CLI in execution mode using prompt-level fallback instructions."""
+        execute_prompt = _EXECUTE_PROMPT_PREAMBLE.format(auto_approve=str(auto_approve).lower()) + user_prompt
+        return self._invoke_mode(system_prompt, execute_prompt, mode="execute", auto_approve=auto_approve)
+
+    def _invoke_mode(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        mode: str,
+        auto_approve: bool | None = None,
+    ) -> str:
+        """Run Gemini CLI for a specific invocation mode and return the text response."""
+        combined_prompt = self._combine_prompt(system_prompt, user_prompt)
+        cmd = self._build_command(combined_prompt)
+
+        logger.debug("Gemini CLI mode: %s", mode)
         logger.debug("Gemini CLI command: %s", cmd[:2] + ["<prompt>"] + cmd[3:])
         logger.debug(
             "Gemini CLI combined prompt (%d chars, sha256=%s):\n%s",
@@ -48,7 +75,12 @@ class GeminiCLIBackend:
             _checksum_prefix(combined_prompt),
             combined_prompt,
         )
-        logger.debug("Timeout: %d seconds, model: %s", self._timeout, self._model or "(default)")
+        logger.debug(
+            "Timeout: %d seconds, model: %s, auto_approve=%s",
+            self._timeout,
+            self._model or "(default)",
+            auto_approve if auto_approve is not None else "(n/a)",
+        )
 
         try:
             result = subprocess.run(
@@ -88,6 +120,18 @@ class GeminiCLIBackend:
             extracted,
         )
         return extracted
+
+    def _build_command(self, combined_prompt: str) -> list[str]:
+        """Return the Gemini CLI command list for a prepared prompt."""
+        cmd: list[str] = ["gemini", "-p", combined_prompt, "-o", "json"]
+        if self._model:
+            cmd.extend(["-m", self._model])
+        return cmd
+
+    @staticmethod
+    def _combine_prompt(system_prompt: str, user_prompt: str) -> str:
+        """Return a single Gemini prompt payload from system and user prompt text."""
+        return f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_prompt}"
 
     @staticmethod
     def extract_text(raw: str) -> str:

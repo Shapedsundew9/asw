@@ -10,8 +10,8 @@ from pathlib import Path
 
 from asw.company import hash_file
 from asw.git import GitError, is_git_repo, repo_root
-from asw.linters.json_lint import validate_phase_task_mapping
 from asw.linters.markdown import extract_markdown_section_body, validate_markdown_list_section, validate_sections
+from asw.phase_tasks import lint_phase_task_mapping_json
 
 logger = logging.getLogger("asw.phase_preparation")
 
@@ -84,9 +84,49 @@ class PhaseArtifactPaths:
     summary_path: Path
     script_path: Path
 
+    @property
+    def task_mapping_json_path(self) -> Path:
+        """Return the canonical task-mapping JSON artifact path."""
+        return self.artifacts_dir / f"{self.stem}_task_mapping.json"
+
+    @property
+    def task_mapping_md_path(self) -> Path:
+        """Return the human-readable task-mapping Markdown artifact path."""
+        return self.artifacts_dir / f"{self.stem}_task_mapping.md"
+
     def feedback_path(self, role_title: str) -> Path:
         """Return the feedback artifact path for *role_title*."""
         return self.artifacts_dir / f"{self.stem}_feedback_{_slugify(role_title)}.md"
+
+    def implementation_plan_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation-plan artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_plan.md"
+
+    def implementation_execution_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation-execution artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_execute.md"
+
+    def implementation_validation_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation-validation artifact path."""
+        return (
+            self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_validation.md"
+        )
+
+    def implementation_scope_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation scope-evidence artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_scope.md"
+
+    def implementation_review_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation-review artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_review.md"
+
+    def implementation_commit_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation commit-summary artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_commit.md"
+
+    def _implementation_artifact_stem(self, turn_index: int, role_title: str, attempt: int) -> str:
+        """Return the common filename stem for implementation-turn artifacts."""
+        return f"{self.stem}_turn_{turn_index:02d}_{_slugify(role_title)}_attempt_{attempt}"
 
     def attempt_log_path(self, attempt: int) -> Path:
         """Return the execution-log path for *attempt*."""
@@ -134,7 +174,7 @@ def extract_markdown_list_items(content: str, heading: str) -> list[str]:
     return items
 
 
-def lint_phase_design(content: str, *, allowed_roles: set[str]) -> tuple[list[str], str | None]:
+def lint_phase_design(content: str, *, allowed_roles: set[str]) -> tuple[list[str], dict | None]:
     """Validate a Development Lead phase-design artifact."""
     errors: list[str] = []
     errors.extend(validate_sections(content, _PHASE_DESIGN_REQUIRED_SECTIONS))
@@ -146,10 +186,14 @@ def lint_phase_design(content: str, *, allowed_roles: set[str]) -> tuple[list[st
     json_block = extract_fenced_code_block(content, "json")
     if json_block is None:
         errors.append("No fenced ```json``` task-mapping block found in phase design output.")
-    else:
-        errors.extend(validate_phase_task_mapping(json_block, allowed_roles=allowed_roles))
+        return errors, None
 
-    return errors, json_block
+    task_mapping_errors, task_mapping = lint_phase_task_mapping_json(json_block, allowed_roles=allowed_roles)
+    errors.extend(task_mapping_errors)
+    if errors:
+        return errors, None
+
+    return errors, task_mapping
 
 
 def lint_phase_feedback(content: str) -> list[str]:

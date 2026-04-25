@@ -1,21 +1,14 @@
 # Quickstart
 
-This guide takes you from zero to a completed V0.2 pipeline run in about five minutes.
+Run the current pipeline once, review the planning gates, and inspect the main artifacts it leaves behind.
 
 ## Before You Start
 
-Complete [Installation](installation.md) first. Your Gemini CLI must be authenticated, and you should use an interactive terminal because the Founder Review Gate is menu-driven.
-
-Confirm that the current shell can see your API key:
+Complete [Installation](installation.md) first. Use an interactive terminal, and make sure Gemini works in the same shell session:
 
 ```bash
 env | grep GEMINI_API_KEY
-```
-
-If that prints nothing, set it in this shell session first:
-
-```bash
-export GEMINI_API_KEY="your_api_key_here"
+gemini -p "Reply with OK" -o json
 ```
 
 ## Step 1 - Create A Project Folder
@@ -27,11 +20,11 @@ git init
 git commit --allow-empty -m "Initial commit"
 ```
 
-If you only want to experiment, you can skip the git setup above and add `--no-commit` in Step 3.
+If you only want to experiment, you can skip the git setup and add `--no-commit` in Step 3.
 
 ## Step 2 - Write A Vision Document
 
-Create a file named `vision.md`. A vision document is a short plain-English brief for the founding team that `asw` simulates.
+Create `vision.md` with a short, plain-English description of the product you want the simulated company to build.
 
 ```markdown
 # Vision: Task Tracker CLI
@@ -54,7 +47,7 @@ Individual developers and power users who prefer terminal-based tools.
 A working CLI with unit tests and a README.
 ```
 
-There is no rigid template. Write whatever clearly explains what you want to build and who it is for.
+There is no strict template. The important part is that the vision is clear enough for PRD, architecture, and execution planning to stay aligned.
 
 ## Step 3 - Start The Pipeline
 
@@ -62,82 +55,143 @@ There is no rigid template. Write whatever clearly explains what you want to bui
 asw start --vision vision.md
 ```
 
-Optional: capture a debug log while you learn the workflow.
+If you want a debug log for the run:
 
 ```bash
 asw start --vision vision.md --debug
 ```
 
-The CLI prints progress like this:
+The startup output begins like this:
 
 ```text
 ========================================================================
-  AgenticOrg CLI – V0.2 Pipeline
+  AgenticOrg CLI – V0.3 Pipeline
 ========================================================================
 ✓ Vision loaded: vision.md (604 chars)
 ✓ LLM backend: Gemini CLI
 
 ✓ Company directory initialised: /path/to/my-first-project/.company
-
->> CPO – attempt 1
-   Invoking CPO via Gemini CLI (may take up to 5 min)…
-   Response received.
-   Lint passed for PRD.
-
-✓ PRD written: /path/to/my-first-project/.company/artifacts/prd.md
 ```
 
-## Step 4 - Answer Questions And Review The PRD
+At this point `asw` has also bootstrapped the validation-contract files under `.company/artifacts/`.
 
-The CPO may include structured founder questions in the PRD. When that happens, `asw` asks those questions first, writes your answers back into the artifact locally, and then returns you to the review flow.
+## Step 4 - Review The Three Planning Gates
 
-While those questions are pending, the review panel hides the raw structured question payload so you do not read the same question list twice.
+The first interactive part of the run is the planning sequence:
 
-Once the artifact is ready for review, you can choose from these actions:
+1. PRD
+2. Architecture
+3. Execution Plan
+
+Each of those phases can ask structured founder questions before the review menu appears. Your answers are written back into the artifact locally, then `asw` shows the updated artifact for review.
+
+The review menu supports these actions:
 
 | Choice | What Happens |
 |--------|--------------|
 | Approve | Accept the artifact and continue |
-| Reject | Rerun the phase from the original context |
-| Modify | Provide notes and rerun the phase with your guidance |
-| Request More Questions | Ask the agent for another question round focused on unresolved issues |
+| Reject | Discard the current draft and rerun the phase from its original context |
+| Modify | Provide notes and rerun with your guidance |
+| Request More Questions | Ask for another question round focused on unresolved issues |
 | Stop | Exit cleanly with everything created so far left on disk |
 
-When you use **Modify**, type your feedback in the multiline prompt and press `Esc`, then `Enter`, to submit it.
+When you use **Modify**, press `Esc`, then `Enter`, to submit the multiline feedback prompt.
 
-## Step 5 - Review The Architecture
+For the execution-plan gate, **Modify** also accepts a full JSON object. If you paste edited execution-plan JSON, `asw` validates it locally before continuing.
 
-After the PRD is approved, the CTO generates:
+## Step 5 - Inspect The Core Artifacts
 
-- `.company/artifacts/architecture.json`
-- `.company/artifacts/architecture.md`
+After the execution plan is approved, `asw` automatically generates the roster, role prompts, and validation-contract companion files.
 
-Review the technical choices, component breakdown, data models, API contracts, and Mermaid diagram before approving.
+Inspect the artifacts directory:
 
-## Step 6 - Review The Execution Plan
+```bash
+ls .company/artifacts
+sed -n '1,200p' .company/artifacts/validation_contract.md
+```
 
-After the architecture is approved, the VP Engineering produces:
+Important files at this stage include:
 
-- `.company/artifacts/execution_plan.json`
-- `.company/artifacts/execution_plan.md`
+- `prd.md`
+- `architecture.json`
+- `architecture.md`
+- `execution_plan.json`
+- `execution_plan.md`
+- `roster.json`
+- `roster.md`
+- `validation_contract.json`
+- `validation_contract.md`
 
-This is the phase where you approve the first-phase team and the overall build-up strategy.
+The validation contract starts small by default. It usually contains an empty `validations` array and a change policy that tells later phases to add coverage or record explicit known gaps when behavior changes.
 
-Useful review questions:
+## Step 6 - Inspect The Phase-Preparation Artifacts
 
-- Does Phase 1 stay intentionally narrow enough to validate the product quickly?
-- Are any roles being hired too early?
-- Are the deferred capabilities clearly justified?
+After the planning artifacts are complete, `asw` iterates through each approved execution-plan phase and prepares the implementation work.
 
-If you want direct control, you can paste an edited execution-plan JSON object during **Modify** and `asw` validates it locally.
+Inspect the first phase:
 
-## Step 7 - Let Hiring And Role Generation Finish
+```bash
+ls .company/artifacts/phases
+sed -n '1,220p' .company/artifacts/phases/01_design_final.md
+sed -n '1,220p' .company/artifacts/phases/01_task_mapping.md
+```
 
-Once you approve the execution plan, the Hiring Manager automatically expands the approved team into detailed role briefs, and the Role Writer then generates one Markdown role prompt for each approved entry. These phases run automatically with no extra Founder Review Gate.
+For each phase, `asw` writes artifacts such as:
 
-## What Gets Created
+- `01_design_draft.md`
+- `01_feedback_*.md`
+- `01_design_final.md`
+- `01_task_mapping.json`
+- `01_task_mapping.md`
+- `01_setup_proposal.md`
+- `01_setup_summary.md`
 
-After the pipeline completes, your project looks like this:
+It also extracts a setup script into the workspace DevContainer directory:
+
+```bash
+ls .devcontainer
+```
+
+The script path follows this pattern:
+
+- `.devcontainer/phase_01_setup.sh`
+
+By default, `asw` records setup execution as deferred. It writes the proposal, summary, and script, but does not run the script.
+
+If you explicitly want the dangerous setup-execution path, rerun with:
+
+```bash
+asw start --vision vision.md --execute-phase-setups
+```
+
+That opt-in path adds a separate founder execution gate before any generated setup script runs.
+
+## Step 7 - Inspect The Implementation-Turn Artifacts
+
+Once phase preparation is complete, `asw` executes implementation turns. Each turn groups the ready tasks owned by one role, then records plan, execute, validation, review, and commit evidence.
+
+Inspect the first turn artifacts:
+
+```bash
+ls .company/artifacts/phases
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_validation.md
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_review.md
+```
+
+Each turn writes files that follow this pattern:
+
+- `01_turn_01_<role>_attempt_1_plan.md`
+- `01_turn_01_<role>_attempt_1_execute.md`
+- `01_turn_01_<role>_attempt_1_validation.md`
+- `01_turn_01_<role>_attempt_1_scope.md`
+- `01_turn_01_<role>_attempt_1_review.md`
+- `01_turn_01_<role>_attempt_1_commit.md`
+
+The validation step reruns the current validation contract after execution. If the validation report fails or the Development Lead review requests revisions, `asw` retries the same turn with concrete follow-up guidance. If retries run out, the run stops and leaves all artifacts on disk for inspection.
+
+## Step 8 - Understand The Resulting Workspace
+
+After a successful run, your project will look roughly like this:
 
 ```text
 my-first-project/
@@ -150,8 +204,10 @@ my-first-project/
       vpe.md
       hiring_manager.md
       role_writer.md
-      python_backend_developer.md
-      frontend_developer.md
+      development_lead.md
+      phase_feedback_reviewer.md
+      devops_engineer.md
+      <generated-role>.md
     artifacts/
       prd.md
       architecture.json
@@ -160,45 +216,67 @@ my-first-project/
       execution_plan.md
       roster.json
       roster.md
+      validation_contract.json
+      validation_contract.md
+      phases/
+        01_design_draft.md
+        01_feedback_*.md
+        01_design_final.md
+        01_task_mapping.json
+        01_task_mapping.md
+        01_setup_proposal.md
+        01_setup_summary.md
+        01_turn_*_plan.md
+        01_turn_*_execute.md
+        01_turn_*_validation.md
+        01_turn_*_scope.md
+        01_turn_*_review.md
+        01_turn_*_commit.md
     memory/
     templates/
     standards/
+  .devcontainer/
+    phase_01_setup.sh
 ```
 
-If you did not use `--no-commit`, your git history will usually contain four automatic commits:
+If commits are enabled, your git history will include messages like:
 
 ```text
 [asw] Phase: prd-generation completed
 [asw] Phase: architecture-generation completed
 [asw] Phase: execution-plan-generation completed
 [asw] Phase: hiring completed
+[asw] Phase: phase_1:turn:1 completed
 ```
 
-By default those commits stage only `.company/`. If you explicitly want the phase commits to include the rest of the repository worktree, rerun with `--stage-all`.
+By default, those commits stage `.company/` plus any approved implementation-turn paths. If you run with `--stage-all`, `asw` stages the full worktree instead.
 
-## If You Run It Again
+## Step 9 - Run It Again Safely
 
-Rerunning the same command resumes from saved state. `asw` compares the current hashes of tracked inputs and outputs against the saved snapshots in `.company/pipeline_state.json`.
+Rerunning the same command resumes from saved state:
 
-If a completed phase is still current, `asw` skips it. If a completed phase's outputs are missing or changed, `asw` reruns it. If its tracked inputs changed but the outputs still exist, `asw` lets you continue with the saved artifacts, rerun from that phase, or restart from scratch.
+```bash
+asw start --vision vision.md
+```
 
-Use `--restart` when you want to discard the existing `.company/` directory and rebuild it from scratch.
+`asw` compares tracked input and output hashes in `.company/pipeline_state.json`.
+
+- If a completed step is still current, `asw` skips it.
+- If outputs are missing or changed, `asw` reruns the step.
+- If tracked inputs changed but saved outputs still exist, `asw` prompts you to continue, rerun, or restart.
+
+Use `--restart` when you want to delete `.company/` and rebuild from scratch.
 
 ## Troubleshooting
 
-If you see an error about `GEMINI_API_KEY`:
-
-1. Set the key in the same shell where you run `asw`.
-2. Re-check with `env | grep GEMINI_API_KEY`.
-3. Run `gemini -p "Reply with OK" -o json` to verify Gemini works directly.
-4. Rerun `asw start --vision vision.md --no-commit`.
-
-If you want more detail about what happened during a failed run, rerun with `--debug`.
-
-If a generated artifact fails structural validation, `asw` saves the rejected output under `.company/artifacts/failed/` before exiting so you can inspect what went wrong.
+- If Gemini authentication fails, re-check `GEMINI_API_KEY` and rerun `gemini -p "Reply with OK" -o json` before retrying `asw`.
+- If the working directory is not a git repository, either initialize git or rerun with `--no-commit`.
+- If a generated artifact fails structural validation, inspect `.company/artifacts/failed/`.
+- If an implementation turn stops, inspect the latest `*_validation.md` and `*_review.md` files under `.company/artifacts/phases/`.
+- If you need a detailed execution trace, rerun with `--debug`.
 
 ## What's Next
 
-- [First Complete Run](../tutorials/first-project.md) - a deeper walkthrough with commentary on each decision
-- [Runs, State, and Recovery](../reference/runs-and-state.md) - resume, restart, and debug behavior
-- [CLI Reference](../reference/cli.md) - full flag documentation
+- [First Complete Run](../tutorials/first-project.md) - a deeper walkthrough with commentary on each stage
+- [Key Concepts](../reference/concepts.md) - understand how the loops and gates fit together
+- [Runs, State, and Recovery](../reference/runs-and-state.md) - learn how resume, invalidation, and restart behavior work in detail

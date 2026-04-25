@@ -18,6 +18,7 @@ _REQUIRED_KEYS = (
 
 _FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]*\.md$")
 _TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_VALIDATION_KINDS = {"command", "checklist", "manual_gate"}
 
 
 def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str]) -> None:
@@ -27,7 +28,7 @@ def _expect_non_empty_string(data: dict, key: str, prefix: str, errors: list[str
         errors.append(f"{prefix}.{key}: must be a non-empty string.")
 
 
-def _expect_string_list(
+def _expect_string_list(  # pylint: disable=too-many-arguments
     data: dict,
     key: str,
     prefix: str,
@@ -305,5 +306,71 @@ def validate_phase_task_mapping(  # pylint: disable=too-many-branches,too-many-l
         for dep_idx, dependency in enumerate(depends_on):
             if isinstance(dependency, str) and dependency and dependency not in valid_ids:
                 errors.append(f"tasks[{idx}].depends_on[{dep_idx}]: unknown task id '{dependency}'.")
+
+    return errors
+
+
+def validate_validation_contract(content: str) -> list[str]:
+    """Validate that *content* is well-formed validation-contract JSON."""
+    errors: list[str] = []
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        errors.append(f"Invalid JSON: {exc}")
+        return errors
+
+    if not isinstance(data, dict):
+        errors.append(f"Expected a JSON object at top level, got {type(data).__name__}.")
+        return errors
+
+    _expect_non_empty_string(data, "version", "validation_contract", errors)
+    _expect_non_empty_string(data, "owner", "validation_contract", errors)
+    _expect_non_empty_string(data, "summary", "validation_contract", errors)
+    _expect_string_list(data, "protected_behaviors", "validation_contract", errors, allow_empty=True)
+    _expect_string_list(data, "known_gaps", "validation_contract", errors, allow_empty=True)
+    _expect_non_empty_string(data, "change_policy", "validation_contract", errors)
+
+    validations = data.get("validations")
+    if not isinstance(validations, list):
+        errors.append("validation_contract.validations: must be an array.")
+        return errors
+
+    for idx, entry in enumerate(validations):
+        prefix = f"validation_contract.validations[{idx}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}: must be an object.")
+            continue
+
+        _expect_non_empty_string(entry, "id", prefix, errors)
+        _expect_non_empty_string(entry, "title", prefix, errors)
+        _expect_non_empty_string(entry, "kind", prefix, errors)
+        _expect_string_list(entry, "success_criteria", prefix, errors)
+        _expect_string_list(entry, "protects", prefix, errors)
+
+        validation_id = entry.get("id")
+        if isinstance(validation_id, str) and not _TASK_ID_RE.match(validation_id):
+            errors.append(f"{prefix}.id: must match lowercase_underscore format.")
+
+        kind = entry.get("kind")
+        if isinstance(kind, str) and kind not in _VALIDATION_KINDS:
+            allowed = ", ".join(sorted(_VALIDATION_KINDS))
+            errors.append(f"{prefix}.kind: must be one of {allowed}.")
+
+        command = entry.get("command")
+        if kind == "command" and (not isinstance(command, str) or not command.strip()):
+            errors.append(f"{prefix}.command: must be a non-empty string when kind is 'command'.")
+
+        working_directory = entry.get("working_directory")
+        if kind == "command" and (not isinstance(working_directory, str) or not working_directory.strip()):
+            errors.append(f"{prefix}.working_directory: must be a non-empty string when kind is 'command'.")
+
+        always_run = entry.get("always_run")
+        if not isinstance(always_run, bool):
+            errors.append(f"{prefix}.always_run: must be a boolean.")
+
+        enabled = entry.get("enabled")
+        if not isinstance(enabled, bool):
+            errors.append(f"{prefix}.enabled: must be a boolean.")
 
     return errors

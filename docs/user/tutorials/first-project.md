@@ -1,15 +1,15 @@
 # Tutorial: First Complete Run
 
-This tutorial walks through a realistic V0.2 run so you can evaluate each artifact, handle founder questions, and understand what a finished `.company/` workspace looks like.
+Walk through a realistic project from vision to implementation-turn artifacts so you can see how the current pipeline behaves in practice.
 
-**What you will learn:**
+## What You Will Learn
 
-- How to write a vision document that produces useful downstream artifacts.
-- How to review the PRD, architecture, and execution-plan gates.
-- How generated roles inherit responsibilities and standards.
-- How reruns, restarts, and debug logs fit into a real workflow.
+- How to write a vision document that drives useful planning artifacts
+- How to review the PRD, architecture, and execution-plan gates
+- How the validation contract, phase-preparation artifacts, and implementation turns fit together
+- How optional setup execution, automatic commits, and reruns behave in a real workspace
 
-**Prerequisites:** Complete [Installation](../getting-started/installation.md) first.
+Complete [Installation](../getting-started/installation.md) first.
 
 ## 1 - Set Up The Project
 
@@ -20,11 +20,11 @@ git init
 git commit --allow-empty -m "Initial commit"
 ```
 
-If you do not want git commits yet, you can still follow the tutorial and add `--no-commit` to the run command later.
+If you do not want git commits yet, you can still follow the tutorial and add `--no-commit` to the run command.
 
 ## 2 - Write The Vision Document
 
-Create `vision.md`. Focus on what you want to build, who it is for, and what success looks like. Avoid over-specifying implementation details unless they are real constraints.
+Create `vision.md`. Focus on the product behavior, important constraints, and non-goals.
 
 ```markdown
 # Vision: Link Vault
@@ -54,15 +54,9 @@ A self-hosted web app with acceptance criteria, Docker Compose support,
 and unit tests.
 ```
 
-Good vision documents usually do three things well:
-
-- They describe user-facing behavior clearly.
-- They name important constraints, such as self-hosting or export formats.
-- They include non-goals so the PRD does not sprawl.
-
 ## 3 - Start The Pipeline
 
-Run the full pipeline and capture a log while you learn:
+Run the full pipeline with a debug log:
 
 ```bash
 asw start --vision vision.md --debug link-vault.log
@@ -72,194 +66,146 @@ The early output looks like this:
 
 ```text
 ========================================================================
-  AgenticOrg CLI – V0.2 Pipeline
+  AgenticOrg CLI – V0.3 Pipeline
 ========================================================================
 ✓ Vision loaded: vision.md (751 chars)
 ✓ LLM backend: Gemini CLI
 
 ✓ Company directory initialised: /path/to/link-vault/.company
-
->> CPO – attempt 1
-   Invoking CPO via Gemini CLI (may take up to 5 min)…
 ```
 
-Two important rules for the rest of the tutorial:
+The initialization step also bootstraps `.company/artifacts/validation_contract.json` and `.company/artifacts/validation_contract.md`.
 
-- `asw` retries only transient Gemini failures, such as timeouts or busy responses.
-- If an artifact fails mechanical linting, the run exits instead of auto-resubmitting the same invalid output.
+## 4 - Review PRD, Architecture, And Execution Plan
 
-## 4 - Review The PRD Carefully
+These are the three normal founder-review gates in the current pipeline.
 
-When the CPO finishes, inspect the artifact:
+Inspect the artifacts as they appear:
 
 ```bash
 sed -n '1,220p' .company/artifacts/prd.md
-```
-
-Check these first:
-
-- The product summary should match your intent.
-- Functional requirements should include everything in the vision and avoid invented extras.
-- Acceptance criteria should be concrete enough to test.
-- The Mermaid diagram should reflect the right system shape.
-
-If the PRD contains structured founder questions, `asw` asks them before showing the review menu. Your answers are written into the PRD locally, which lets you inspect the resolved decisions before any rerun happens.
-
-While those questions are pending, the review panel hides the raw structured question payload and the duplicate pending-question prose, so the CLI remains the single place where you answer them.
-
-Choose the review action that matches the situation:
-
-| Situation | Best Choice |
-|-----------|-------------|
-| The PRD is accurate and complete | Approve |
-| The PRD drifted badly from the vision | Reject |
-| A few sections need targeted changes | Modify |
-| The PRD still has unresolved unknowns | Request More Questions |
-| You want to stop and rethink the project | Stop |
-
-Example modify feedback:
-
-```text
-Remove all references to team collaboration in V1. The vision is for a
-personal tool. In the diagram, the browser extension should talk to the
-API, not directly to the database.
-```
-
-In the multiline feedback prompt, press `Esc`, then `Enter`, to submit.
-
-## 5 - Review The Architecture
-
-After PRD approval, the CTO generates `architecture.json` and `architecture.md`.
-
-Inspect both:
-
-```bash
 cat .company/artifacts/architecture.json
 sed -n '1,240p' .company/artifacts/architecture.md
-```
-
-Look for alignment between the vision, PRD, and technical choices:
-
-- Is the tech stack appropriate for a self-hosted bookmark app?
-- Do the components map cleanly to the browser extension, API, search, and storage needs?
-- Do the data models contain the fields you would expect for bookmarks, notes, and tags?
-- Do the API contracts support the user-facing behaviors from the vision?
-
-If the architecture raises deployment or stack questions, **Request More Questions** is often better than making the CTO guess.
-
-## 6 - Review The Execution Plan
-
-After architecture approval, the VP Engineering proposes the phased delivery plan and initial team in:
-
-```bash
 cat .company/artifacts/execution_plan.json
 sed -n '1,220p' .company/artifacts/execution_plan.md
 ```
 
-This is the phase where you control scope, headcount, and sequencing.
+Good review questions for this project:
 
-Review the execution plan for:
+- Does the PRD stay focused on a personal product instead of drifting into collaboration features?
+- Does the architecture support full-text search, exports, and self-hosting cleanly?
+- Does the execution plan keep Phase 1 narrow enough to validate locally before expanding into hosted operations?
 
-- A Phase 1 scope that is still too ambitious.
-- Roles that were hired too early instead of deferred.
-- Missing rationale for why a role is needed now.
-- Deferred capabilities that should actually move forward sooner.
+When the execution-plan gate needs precise edits, you can paste a full JSON object during **Modify** and let `asw` validate it locally.
 
-You have two useful modify strategies:
+## 5 - Inspect The Validation Contract And Hired Team
 
-- Write natural-language feedback if you want the VP Engineering to rethink the phased plan or the selected team.
-- Paste an edited JSON object if you already know the exact team and sequencing you want. `asw` validates that JSON before accepting it.
-
-For example, if the proposed plan adds dedicated DevOps work too early, you might defer that capability and keep the first phase focused on local validation.
-
-## 7 - Inspect The Role Briefs And Generated Roles
-
-After execution-plan approval, the Hiring Manager automatically elaborates the approved team into structured role briefs:
+After execution-plan approval, `asw` generates the roster and role prompts automatically. Inspect the validation contract and the resulting team artifacts:
 
 ```bash
+sed -n '1,220p' .company/artifacts/validation_contract.md
 cat .company/artifacts/roster.json
 sed -n '1,220p' .company/artifacts/roster.md
-```
-
-At this point, the team is already decided. The Hiring Manager is refining mission, scope, deliverables, collaborators, and standards for each approved role.
-
-After that, `asw` generates one role prompt per approved entry. Inspect the results:
-
-```bash
 ls .company/roles
-sed -n '1,220p' .company/roles/python_backend_developer.md
 ```
 
-Generated role files should feel specific, not generic. Each one should:
+The validation contract starts as a baseline artifact. By default it documents the current gaps and a change policy, but usually has no active command validations yet.
 
-- Reference real parts of the architecture.
-- Describe exactly what the role produces.
-- Enforce any assigned standards.
+The roster and generated role prompts should reflect the approved execution plan rather than inventing extra roles.
 
-The bundled standards also remain editable for future runs:
+## 6 - Inspect The Phase-Preparation Outputs
+
+After hiring artifacts are complete, `asw` iterates through each execution-plan phase and prepares the work.
+
+Inspect the first phase artifacts:
 
 ```bash
-ls .company/standards
-sed -n '1,200p' .company/standards/python_guidelines.md
+ls .company/artifacts/phases
+sed -n '1,220p' .company/artifacts/phases/01_design_draft.md
+sed -n '1,220p' .company/artifacts/phases/01_design_final.md
+cat .company/artifacts/phases/01_task_mapping.json
+sed -n '1,220p' .company/artifacts/phases/01_task_mapping.md
 ```
 
-`asw` also copies bundled templates into `.company/templates/`. In the current
-pipeline, the live ones are `execution_plan_template.md` for the VP
-Engineering phase and `role_template.md` for specialist role generation.
+You should see a sequence like this for each approved phase:
 
-Inspect them with:
+- A Development Lead draft
+- One feedback artifact per assigned role
+- A harmonized final design
+- A canonical task mapping in both JSON and Markdown
+- A DevOps setup proposal and summary
+- A generated setup script under `.devcontainer/phase_01_setup.sh`
+
+Inspect the setup files too:
 
 ```bash
-ls .company/templates
-sed -n '1,220p' .company/templates/execution_plan_template.md
-sed -n '1,220p' .company/templates/role_template.md
+sed -n '1,220p' .company/artifacts/phases/01_setup_proposal.md
+sed -n '1,220p' .company/artifacts/phases/01_setup_summary.md
+sed -n '1,220p' .devcontainer/phase_01_setup.sh
 ```
 
-If you edit templates, standards, bundled role files, or the vision after a completed run, the next `asw start --vision vision.md` compares those tracked files against the saved phase snapshots in `.company/pipeline_state.json` and prompts at the earliest affected phase.
+## 7 - Understand Optional Setup Execution
 
-## 8 - Understand The Finished Workspace
+The default path writes setup proposals and scripts but does not run them. The execution step is recorded as deferred unless you opt in with `--execute-phase-setups`.
 
-After a successful run, you should have a structure like this:
+If you do opt in:
 
-```text
-link-vault/
-  vision.md
-  .company/
-    pipeline_state.json
-    roles/
-      cpo.md
-      cto.md
-      vpe.md
-      hiring_manager.md
-      role_writer.md
-      python_backend_developer.md
-    artifacts/
-      prd.md
-      architecture.json
-      architecture.md
-      execution_plan.json
-      execution_plan.md
-      roster.json
-      roster.md
-    memory/
-    templates/
-    standards/
+```bash
+asw start --vision vision.md --execute-phase-setups
 ```
 
-If commits are enabled, your git log will usually contain four `asw` commits:
+`asw` shows a separate red execution gate before running the generated script. If you approve execution and the script runs, each attempt is logged under `.company/artifacts/phases/` with files like:
+
+- `01_setup_attempt_1.log`
+
+If the script touches tracked repository files outside the approved boundary, `asw` stops instead of silently continuing.
+
+## 8 - Inspect The Implementation Turns
+
+After phase preparation, `asw` executes owner turns from the task mapping. Each turn records plan, execute, validation, scope, review, and commit artifacts.
+
+Inspect the directory first so you can see your actual role names:
+
+```bash
+ls .company/artifacts/phases
+```
+
+Then inspect the first turn files:
+
+```bash
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_plan.md
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_execute.md
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_validation.md
+sed -n '1,220p' .company/artifacts/phases/01_turn_01_*_review.md
+```
+
+Important behavior to watch:
+
+- The validation step reruns the current validation contract after execution.
+- The Development Lead review compares the changed paths, assigned standards, and validation report against the approved turn scope.
+- If validation fails or the review decision is `revise`, `asw` retries the same turn with concrete follow-up guidance.
+- If commits are enabled, approved turns create commits with messages like `[asw] Phase: phase_1:turn:1 completed`.
+
+## 9 - Check The Git History
+
+If commits are enabled, inspect the automatic commit trail:
 
 ```bash
 git log --oneline
 ```
 
+You should see major planning commits such as:
+
 ```text
-a1b2c3d [asw] Phase: hiring completed
-4d5e6f7 [asw] Phase: execution-plan-generation completed
-7e8f9a0 [asw] Phase: architecture-generation completed
-1234567 [asw] Phase: prd-generation completed
+[asw] Phase: prd-generation completed
+[asw] Phase: architecture-generation completed
+[asw] Phase: execution-plan-generation completed
+[asw] Phase: hiring completed
 ```
 
-## 9 - Rerun Safely After Changes
+You may also see one commit per approved implementation turn. The exact number depends on the task mapping and whether a turn actually had changes to commit.
+
+## 10 - Rerun Safely After Changes
 
 The easiest way to resume is to run the same command again:
 
@@ -267,13 +213,7 @@ The easiest way to resume is to run the same command again:
 asw start --vision vision.md
 ```
 
-Useful expectations:
-
-- If the saved input and output hashes still match, completed phases are skipped.
-- If tracked inputs changed but the saved outputs still exist, `asw` asks whether to continue, rerun from that phase, or restart.
-- If you want a guaranteed clean slate, use `--restart`.
-
-Examples:
+Common examples:
 
 ```bash
 asw start --vision vision.md --restart
@@ -282,6 +222,13 @@ asw start --vision vision.md --restart
 ```bash
 asw start --vision vision.md --debug second-run.log
 ```
+
+Useful expectations:
+
+- If saved inputs and outputs still match, `asw` skips the completed step.
+- If outputs are missing or changed, `asw` reruns the step.
+- If tracked inputs changed but saved outputs still exist, `asw` prompts you to continue, rerun, or restart.
+- Editing `validation_contract.json`, a role file, a template, or a saved phase artifact can invalidate later preparation or implementation steps.
 
 ## Diagram: What The Pipeline Did
 
@@ -293,40 +240,54 @@ sequenceDiagram
     participant CPO
     participant CTO
     participant VPE as VP Engineering
-    participant HiringManager as Hiring Manager
-    participant RoleWriter as Role Writer
-    participant Git
+    participant Hiring as Hiring Manager
+    participant Writer as Role Writer
+    participant Lead as Development Lead
+    participant DevOps as DevOps Engineer
+    participant Owner as Turn Owner
 
     Founder->>asw: asw start --vision vision.md
-    asw->>CPO: vision content
+    asw->>asw: init .company and validation contract
+    asw->>CPO: vision
     CPO-->>asw: PRD
-    asw->>asw: Lint PRD
-    asw->>Founder: Founder questions and PRD review
-    Founder-->>asw: Approve
-    asw->>Git: commit prd-generation
-    asw->>CTO: vision + PRD
-    CTO-->>asw: architecture JSON + Mermaid
-    asw->>asw: Lint architecture
-    asw->>Founder: Architecture review
-    Founder-->>asw: Approve
-    asw->>Git: commit architecture-generation
-    asw->>VPE: vision + PRD + architecture
-    VPE-->>asw: execution plan JSON
-    asw->>asw: Lint execution plan
-    asw->>Founder: Execution plan review
-    Founder-->>asw: Approve
-    asw->>Git: commit execution-plan-generation
-    asw->>HiringManager: architecture + execution plan + available standards
-    HiringManager-->>asw: roster JSON role briefs
-    asw->>asw: Lint roster
-    asw->>RoleWriter: one call per approved role
-    RoleWriter-->>asw: generated role prompt(s)
-    asw->>Git: commit hiring
-    asw-->>Founder: Pipeline complete
+    asw->>Founder: PRD questions and review
+    Founder-->>asw: approve or revise
+    asw->>CTO: vision and PRD
+    CTO-->>asw: architecture
+    asw->>Founder: architecture review
+    Founder-->>asw: approve or revise
+    asw->>VPE: vision, PRD, architecture
+    VPE-->>asw: execution plan
+    asw->>Founder: execution plan review
+    Founder-->>asw: approve or revise
+    asw->>Hiring: architecture and execution plan
+    Hiring-->>asw: roster
+    asw->>Writer: one prompt per approved role
+    Writer-->>asw: generated role files
+    loop For each execution-plan phase
+        asw->>Lead: draft and final phase design
+        Lead-->>asw: design artifacts
+        asw->>DevOps: setup proposal and script
+        DevOps-->>asw: proposal, summary, script
+        opt --execute-phase-setups
+            asw->>Founder: execution gate
+            Founder-->>asw: approve or revise
+            asw->>asw: run setup script and record attempt log
+        end
+        loop For each implementation turn
+            asw->>Owner: plan the turn
+            Owner-->>asw: plan artifact
+            asw->>Owner: execute the turn
+            Owner-->>asw: execution artifact
+            asw->>asw: run validation contract
+            asw->>Lead: strict turn review
+            Lead-->>asw: approve or revise
+        end
+    end
 ```
 
 ## What's Next
 
-- [CLI Reference](../reference/cli.md) - all flags in one place
-- [Runs, State, and Recovery](../reference/runs-and-state.md) - resume, restart, and debug behavior
-- [Key Concepts](../reference/concepts.md) - deeper explanation of phases, gates, and generated roles
+- [CLI Reference](../reference/cli.md) - see every supported flag in one place
+- [Key Concepts](../reference/concepts.md) - learn the pipeline model behind the artifacts you just inspected
+- [Runs, State, and Recovery](../reference/runs-and-state.md) - understand what invalidates saved work and how reruns resume

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from subprocess import run as _subprocess_run
 
 logger = logging.getLogger("asw.git")
 
@@ -16,7 +17,7 @@ class GitError(RuntimeError):
 def _run_git(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run a git command inside *workdir* and return the result."""
     logger.debug("Running: git %s (cwd=%s)", " ".join(args), workdir)
-    result = subprocess.run(
+    result = _subprocess_run(
         ["git", *args],
         cwd=workdir,
         capture_output=True,
@@ -44,7 +45,34 @@ def repo_root(workdir: Path) -> Path:
     return Path(result.stdout.strip())
 
 
-def commit_state(workdir: Path, phase_name: str, *, stage_all: bool = False) -> str:
+def worktree_changed_paths(workdir: Path) -> list[str]:
+    """Return repo-relative changed paths from the current worktree."""
+    root = repo_root(workdir)
+    result = _run_git(root, "status", "--short", "--untracked-files=all")
+
+    paths: list[str] = []
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        raw_path = line[3:].strip()
+        if not raw_path:
+            continue
+        if " -> " in raw_path:
+            old_path, new_path = raw_path.split(" -> ", maxsplit=1)
+            paths.extend([old_path.strip(), new_path.strip()])
+            continue
+        paths.append(raw_path)
+
+    return sorted(dict.fromkeys(path for path in paths if path))
+
+
+def commit_state(
+    workdir: Path,
+    phase_name: str,
+    *,
+    stage_all: bool = False,
+    approved_paths: list[str] | None = None,
+) -> str:
     """Stage ``.company/`` or the full repo and create a commit.
 
     Returns the commit hash.
@@ -53,16 +81,25 @@ def commit_state(workdir: Path, phase_name: str, *, stage_all: bool = False) -> 
         msg = f"Not a git repository: {workdir}"
         raise GitError(msg)
 
+    if stage_all and approved_paths is not None:
+        msg = "approved_paths cannot be combined with stage_all=True"
+        raise ValueError(msg)
+
     if stage_all:
         root = repo_root(workdir)
         _run_git(root, "add", "--all")
+    elif approved_paths is not None:
+        root = repo_root(workdir)
+        company_rel_path = _repo_relative_path(root, workdir / ".company")
+        stage_paths = [company_rel_path, *approved_paths]
+        _run_git(root, "add", "--", *stage_paths)
     else:
         _run_git(workdir, "add", ".company/")
 
     message = f"[asw] Phase: {phase_name} completed"
 
     # Check whether there are staged changes before committing.
-    diff_result = subprocess.run(
+    diff_result = _subprocess_run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=workdir,
         capture_output=True,
@@ -80,3 +117,11 @@ def commit_state(workdir: Path, phase_name: str, *, stage_all: bool = False) -> 
     commit_hash = result.stdout.strip()
     print(f"  Committed: {commit_hash[:8]} – {message}")
     return commit_hash
+
+
+def _repo_relative_path(root: Path, path: Path) -> str:
+    """Return *path* relative to the repository root."""
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise GitError(f"Path is outside the repository root: {path}") from exc
