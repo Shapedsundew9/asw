@@ -120,6 +120,10 @@ class PhaseArtifactPaths:
         """Return the implementation-review artifact path."""
         return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_review.md"
 
+    def implementation_commit_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation commit-summary artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_commit.md"
+
     def _implementation_artifact_stem(self, turn_index: int, role_title: str, attempt: int) -> str:
         """Return the common filename stem for implementation-turn artifacts."""
         return f"{self.stem}_turn_{turn_index:02d}_{_slugify(role_title)}_attempt_{attempt}"

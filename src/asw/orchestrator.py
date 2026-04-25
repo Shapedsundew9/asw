@@ -121,6 +121,43 @@ class PhaseStatus:  # pylint: disable=too-many-instance-attributes
         return self.has_record and not self.changed_inputs and not self.changed_outputs and not self.missing_outputs
 
 
+@dataclass(frozen=True)
+class ImplementationTurnStepStatus:
+    """Persisted status for one implementation-turn step."""
+
+    step: str
+    phase_status: PhaseStatus
+    metadata: dict[str, object]
+
+    @property
+    def has_record(self) -> bool:
+        """Return whether the step has a stored completion record."""
+        return self.phase_status.has_record
+
+    @property
+    def is_current(self) -> bool:
+        """Return whether the stored step snapshot is still current."""
+        return self.phase_status.is_current
+
+    @property
+    def attempt(self) -> int | None:
+        """Return the recorded step attempt number."""
+        attempt = self.metadata.get("attempt")
+        return attempt if isinstance(attempt, int) and attempt > 0 else None
+
+
+@dataclass(frozen=True)
+class ImplementationTurnResumePlan:
+    """How one implementation turn should continue or rerun."""
+
+    action: str
+    attempt: int
+    start_step: str
+    feedback: str | None = None
+    approved_paths: list[str] | None = None
+    baseline_changed_paths: list[str] | None = None
+
+
 def _format_paths(paths: list[str]) -> str:
     """Format tracked file paths for terminal output."""
     return ", ".join(paths) if paths else "(none)"
@@ -1059,6 +1096,26 @@ def _phase_loop_state_name(phase_id: str, step: str) -> str:
     return f"phase-loop:{phase_id}:{step}"
 
 
+def _implementation_turn_state_name(phase_id: str, turn_index: int, step: str) -> str:
+    """Return the pipeline-state key for one implementation turn step."""
+    return _phase_loop_state_name(phase_id, f"turn:{turn_index}:{step}")
+
+
+def _empty_phase_status(phase: str) -> PhaseStatus:
+    """Return an empty phase status for a missing implementation-turn record."""
+    return PhaseStatus(
+        phase=phase,
+        completed_at=None,
+        recorded_inputs={},
+        recorded_outputs={},
+        current_inputs={},
+        current_outputs={},
+        changed_inputs=[],
+        changed_outputs=[],
+        missing_outputs=[],
+    )
+
+
 def _phase_label(phase_data: dict, phase_index: int) -> str:
     """Return a human-readable label for an execution-plan phase."""
     phase_id = phase_data.get("id", f"phase_{phase_index + 1}")
@@ -1377,6 +1434,458 @@ def _standard_paths_for_entry(company: Path, entry: dict) -> list[Path]:
     return paths
 
 
+def _implementation_turn_base_input_paths(
+    exec_ctx: PipelineExecutionContext,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+) -> list[Path]:
+    """Return the tracked base inputs for one implementation turn."""
+    role_filename = turn.roster_entry.get("filename")
+    if not isinstance(role_filename, str) or not role_filename:
+        raise RuntimeError(f"Roster entry for {turn.owner_title!r} is missing a role filename.")
+
+    validation_contract_json_path, _ = validation_contract_paths(exec_ctx.company)
+    return [
+        paths.final_path,
+        paths.task_mapping_json_path,
+        exec_ctx.company / "roles" / role_filename,
+        *_standard_paths_for_entry(exec_ctx.company, turn.roster_entry),
+        validation_contract_json_path,
+    ]
+
+
+def _normalized_string_list(value: object) -> list[str]:
+    """Return a normalized list of strings from *value*."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _metadata_string_list(metadata: dict[str, object], key: str) -> list[str] | None:
+    """Return a string list from metadata, or ``None`` when absent or invalid."""
+    value = metadata.get(key)
+    if not isinstance(value, list):
+        return None
+    return [item for item in value if isinstance(item, str)]
+
+
+def _resolve_repo_relative_path(workdir: Path, repo_relative_path: str) -> Path:
+    """Return an absolute path for a repo-relative worktree path."""
+    root = repo_root(workdir) if is_git_repo(workdir) else workdir
+    return root / repo_relative_path
+
+
+def _implementation_commit_output_paths(
+    exec_ctx: PipelineExecutionContext,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    attempt: int,
+    approved_paths: list[str],
+) -> list[Path]:
+    """Return the tracked outputs for one implementation-turn commit step."""
+    commit_summary_path = paths.implementation_commit_path(turn.turn_index, turn.owner_title, attempt)
+    changed_paths = [_resolve_repo_relative_path(exec_ctx.workdir, path) for path in approved_paths]
+    return [commit_summary_path, *changed_paths]
+
+
+def _implementation_turn_step_paths(
+    exec_ctx: PipelineExecutionContext,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    *,
+    step: str,
+    attempt: int,
+    approved_paths: list[str] | None = None,
+) -> tuple[list[Path], list[Path]]:
+    """Return tracked inputs and outputs for one implementation-turn step."""
+    base_inputs = _implementation_turn_base_input_paths(exec_ctx, paths, turn)
+    plan_path = paths.implementation_plan_path(turn.turn_index, turn.owner_title, attempt)
+    execute_path = paths.implementation_execution_path(turn.turn_index, turn.owner_title, attempt)
+    validation_path = paths.implementation_validation_path(turn.turn_index, turn.owner_title, attempt)
+    scope_path = paths.implementation_scope_path(turn.turn_index, turn.owner_title, attempt)
+    review_path = paths.implementation_review_path(turn.turn_index, turn.owner_title, attempt)
+
+    if step == "plan":
+        return base_inputs, [plan_path]
+    if step == "execute":
+        return [*base_inputs, plan_path], [execute_path]
+    if step == "validate":
+        return [*base_inputs, execute_path], [validation_path, scope_path]
+    if step == "review":
+        return [
+            *base_inputs,
+            exec_ctx.company / "roles" / "development_lead.md",
+            plan_path,
+            execute_path,
+            validation_path,
+            scope_path,
+        ], [review_path]
+    if step == "commit":
+        return [*base_inputs, review_path, validation_path, scope_path], _implementation_commit_output_paths(
+            exec_ctx,
+            paths,
+            turn,
+            attempt,
+            approved_paths or [],
+        )
+
+    raise ValueError(f"Unsupported implementation step: {step}")
+
+
+def _render_implementation_commit_artifact(
+    phase_label: str,
+    turn: PhaseImplementationTurn,
+    *,
+    approved_paths: list[str],
+    commit_hash: str,
+) -> str:
+    """Render a Markdown commit summary for one approved implementation turn."""
+    lines = [
+        f"# Commit Summary: {_turn_label(phase_label, turn)}",
+        "",
+        f"- **Owner:** {turn.owner_title}",
+        f"- **Task IDs:** {', '.join(turn.task_ids)}",
+        f"- **Commit Hash:** {commit_hash or '(no commit created)'}",
+        "",
+        "## Approved Paths",
+    ]
+    if approved_paths:
+        lines.extend(f"- {path}" for path in approved_paths)
+    else:
+        lines.append("- None.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _evaluate_implementation_commit_status(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_id: str,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+) -> PhaseStatus:
+    """Return the persisted commit-step status for one implementation turn."""
+    phase = _implementation_turn_state_name(phase_id, turn.turn_index, "commit")
+    record = _phase_record(exec_ctx.state, phase)
+    metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {}
+    attempt = metadata.get("attempt")
+    approved_paths = metadata.get("approved_paths")
+    if not isinstance(attempt, int) or attempt < 1:
+        return _empty_phase_status(phase)
+
+    approved_path_list = (
+        [path for path in approved_paths if isinstance(path, str)] if isinstance(approved_paths, list) else []
+    )
+    input_paths, output_paths = _implementation_turn_step_paths(
+        exec_ctx,
+        paths,
+        turn,
+        step="commit",
+        attempt=attempt,
+        approved_paths=approved_path_list,
+    )
+    return _evaluate_phase_status(
+        exec_ctx,
+        phase,
+        input_paths=input_paths,
+        output_paths=output_paths,
+    )
+
+
+def _evaluate_implementation_turn_step_status(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_id: str,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    step: str,
+) -> ImplementationTurnStepStatus:
+    """Return the persisted status for one implementation-turn step."""
+    phase = _implementation_turn_state_name(phase_id, turn.turn_index, step)
+    record = _phase_record(exec_ctx.state, phase)
+    metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {}
+    attempt = metadata.get("attempt")
+    if not isinstance(attempt, int) or attempt < 1:
+        return ImplementationTurnStepStatus(step=step, phase_status=_empty_phase_status(phase), metadata=metadata)
+
+    approved_paths = _metadata_string_list(metadata, "approved_paths") if step == "commit" else None
+    input_paths, output_paths = _implementation_turn_step_paths(
+        exec_ctx,
+        paths,
+        turn,
+        step=step,
+        attempt=attempt,
+        approved_paths=approved_paths,
+    )
+    return ImplementationTurnStepStatus(
+        step=step,
+        phase_status=_evaluate_phase_status(exec_ctx, phase, input_paths=input_paths, output_paths=output_paths),
+        metadata=metadata,
+    )
+
+
+def _record_implementation_turn_step(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_id: str,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    step: str,
+    attempt: int,
+    metadata: dict[str, object],
+) -> None:
+    """Persist a completion marker for one implementation-turn step."""
+    approved_paths = _metadata_string_list(metadata, "approved_paths") if step == "commit" else None
+    input_paths, output_paths = _implementation_turn_step_paths(
+        exec_ctx,
+        paths,
+        turn,
+        step=step,
+        attempt=attempt,
+        approved_paths=approved_paths,
+    )
+    mark_phase_complete(
+        exec_ctx.workdir,
+        exec_ctx.state,
+        _implementation_turn_state_name(phase_id, turn.turn_index, step),
+        input_paths=input_paths,
+        output_paths=output_paths,
+        metadata={
+            "owner_title": turn.owner_title,
+            "task_ids": turn.task_ids,
+            "attempt": attempt,
+            **metadata,
+        },
+    )
+
+
+def _review_from_step_metadata(metadata: dict[str, object]) -> dict[str, object]:
+    """Rebuild a normalized review payload from persisted review metadata."""
+    return {
+        "decision": metadata.get("decision", "revise"),
+        "summary": metadata.get("summary", "Revise the turn based on Development Lead feedback."),
+        "scope_findings": _normalized_string_list(metadata.get("scope_findings")),
+        "standards_findings": _normalized_string_list(metadata.get("standards_findings")),
+        "validation_findings": _normalized_string_list(metadata.get("validation_findings")),
+        "required_follow_up": _normalized_string_list(metadata.get("required_follow_up")),
+    }
+
+
+def _implementation_retry_feedback_from_saved_state(
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    review_metadata: dict[str, object],
+    *,
+    validation_passed: bool,
+) -> str:
+    """Return retry feedback reconstructed from persisted turn artifacts."""
+    validation_report = None
+    attempt = review_metadata.get("attempt")
+    if isinstance(attempt, int) and attempt > 0 and not validation_passed:
+        validation_report = paths.implementation_validation_path(turn.turn_index, turn.owner_title, attempt).read_text(
+            encoding="utf-8"
+        )
+    return _implementation_retry_feedback(
+        _review_from_step_metadata(review_metadata), validation_report=validation_report
+    )
+
+
+def _validate_implementation_commit_scope(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    baseline_changed_paths: list[str],
+    approved_paths: list[str],
+) -> int | None:
+    """Refuse a turn commit when unapproved paths appeared after review."""
+    if exec_ctx.options.stage_all:
+        return None
+
+    baseline_set = set(baseline_changed_paths)
+    current_turn_paths = [path for path in _implementation_changed_paths(exec_ctx) if path not in baseline_set]
+    extra_paths = sorted(set(current_turn_paths) - set(approved_paths))
+    if extra_paths:
+        print(
+            f"\nError: unapproved changed paths appeared before commit: {_format_paths(extra_paths)}",
+            file=sys.stderr,
+        )
+        return 1
+    return None
+
+
+def _classify_implementation_turn_resume(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_id: str,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+) -> tuple[ImplementationTurnResumePlan, dict[str, ImplementationTurnStepStatus]]:
+    """Return how one implementation turn should resume from persisted state."""
+    statuses = {
+        step: _evaluate_implementation_turn_step_status(
+            exec_ctx,
+            phase_id=phase_id,
+            paths=paths,
+            turn=turn,
+            step=step,
+        )
+        for step in ("plan", "execute", "validate", "review", "commit")
+    }
+    latest_attempt = max((status.attempt or 0) for status in statuses.values())
+    next_attempt = max(1, latest_attempt + 1)
+
+    if all(statuses[step].is_current for step in ("plan", "execute", "validate", "review")):
+        review_metadata = statuses["review"].metadata
+        validation_passed = statuses["validate"].metadata.get("passed") is True
+        if review_metadata.get("decision") == "approve" and validation_passed and not exec_ctx.options.no_commit:
+            return (
+                ImplementationTurnResumePlan(
+                    action="commit",
+                    attempt=statuses["review"].attempt or max(1, latest_attempt),
+                    start_step="commit",
+                    approved_paths=_metadata_string_list(review_metadata, "approved_paths") or [],
+                    baseline_changed_paths=_metadata_string_list(review_metadata, "baseline_changed_paths") or [],
+                ),
+                statuses,
+            )
+
+        if review_metadata.get("decision") == "revise" or not validation_passed:
+            return (
+                ImplementationTurnResumePlan(
+                    action="rerun",
+                    attempt=next_attempt,
+                    start_step="plan",
+                    feedback=_implementation_retry_feedback_from_saved_state(
+                        paths,
+                        turn,
+                        review_metadata,
+                        validation_passed=validation_passed,
+                    ),
+                ),
+                statuses,
+            )
+
+    plan_status = statuses["plan"]
+    if not plan_status.has_record:
+        return ImplementationTurnResumePlan(action="resume", attempt=1, start_step="plan"), statuses
+    if not plan_status.is_current:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    plan_baseline = _metadata_string_list(plan_status.metadata, "baseline_changed_paths")
+    if plan_baseline is None:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    execute_status = statuses["execute"]
+    if not execute_status.has_record or execute_status.phase_status.missing_outputs:
+        return (
+            ImplementationTurnResumePlan(
+                action="resume",
+                attempt=plan_status.attempt or 1,
+                start_step="execute",
+                baseline_changed_paths=plan_baseline,
+            ),
+            statuses,
+        )
+    if not execute_status.is_current:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    execute_baseline = _metadata_string_list(execute_status.metadata, "baseline_changed_paths")
+    if execute_baseline is None:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    validate_status = statuses["validate"]
+    if not validate_status.has_record or validate_status.phase_status.missing_outputs:
+        return (
+            ImplementationTurnResumePlan(
+                action="resume",
+                attempt=execute_status.attempt or plan_status.attempt or 1,
+                start_step="validate",
+                baseline_changed_paths=execute_baseline,
+            ),
+            statuses,
+        )
+    if not validate_status.is_current:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    validate_baseline = _metadata_string_list(validate_status.metadata, "baseline_changed_paths")
+    if validate_baseline is None:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    review_status = statuses["review"]
+    if not review_status.has_record or review_status.phase_status.missing_outputs:
+        return (
+            ImplementationTurnResumePlan(
+                action="resume",
+                attempt=validate_status.attempt or execute_status.attempt or plan_status.attempt or 1,
+                start_step="review",
+                baseline_changed_paths=validate_baseline,
+            ),
+            statuses,
+        )
+    if not review_status.is_current:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+    return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
+
+
+def _commit_implementation_turn(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    phase_id: str,
+    phase_data: dict,
+    phase_label: str,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+    attempt: int,
+    approved_paths: list[str],
+    baseline_changed_paths: list[str],
+) -> int | None:
+    """Commit an approved implementation turn and persist durable commit evidence."""
+    approved_path_list = sorted(dict.fromkeys(approved_paths))
+    err = _validate_implementation_commit_scope(
+        exec_ctx,
+        baseline_changed_paths=baseline_changed_paths,
+        approved_paths=approved_path_list,
+    )
+    if err is not None:
+        return err
+
+    commit_name = f"{phase_data.get('id', f'phase_{turn.turn_index}')}:turn:{turn.turn_index}"
+    commit_hash, err = _try_commit_with_hash(
+        exec_ctx.workdir,
+        commit_name,
+        exec_ctx.options.no_commit,
+        stage_all=exec_ctx.options.stage_all,
+        approved_paths=approved_path_list if not exec_ctx.options.stage_all else None,
+    )
+    if err is not None:
+        return err
+    if commit_hash is None:
+        return None
+
+    commit_summary_path = paths.implementation_commit_path(turn.turn_index, turn.owner_title, attempt)
+    commit_summary = _render_implementation_commit_artifact(
+        phase_label,
+        turn,
+        approved_paths=approved_path_list,
+        commit_hash=commit_hash,
+    )
+    _write_text_artifact(commit_summary_path, commit_summary)
+    _record_implementation_turn_step(
+        exec_ctx,
+        phase_id=phase_id,
+        paths=paths,
+        turn=turn,
+        step="commit",
+        attempt=attempt,
+        metadata={
+            "approved_paths": approved_path_list,
+            "baseline_changed_paths": baseline_changed_paths,
+            "commit_hash": commit_hash,
+        },
+    )
+    return None
+
+
 def _implementation_changed_paths(exec_ctx: PipelineExecutionContext) -> list[str]:
     """Return changed repo paths excluding `.company` artifacts."""
     if not is_git_repo(exec_ctx.workdir):
@@ -1512,6 +2021,7 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
     turn: PhaseImplementationTurn,
 ) -> int | None:
     """Run plan, execute, validate, review, and commit for one implementation turn."""
+    phase_id = str(phase_data.get("id", f"phase_{turn.turn_index}"))
     role_filename = turn.roster_entry.get("filename")
     if not isinstance(role_filename, str) or not role_filename:
         raise RuntimeError(f"Roster entry for {turn.owner_title!r} is missing a role filename.")
@@ -1534,70 +2044,148 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
     )
     turn_summary = render_phase_implementation_turn_summary(turn)
     current_phase_json = json.dumps(phase_data, indent=2)
-    baseline_changed_paths = set(_implementation_changed_paths(exec_ctx))
-    feedback: str | None = None
+    turn_label = _turn_label(phase_label, turn)
+    resume_plan, statuses = _classify_implementation_turn_resume(
+        exec_ctx,
+        phase_id=phase_id,
+        paths=paths,
+        turn=turn,
+    )
+    if resume_plan.action == "commit":
+        return _commit_implementation_turn(
+            exec_ctx,
+            phase_id=phase_id,
+            phase_data=phase_data,
+            phase_label=phase_label,
+            paths=paths,
+            turn=turn,
+            attempt=resume_plan.attempt,
+            approved_paths=resume_plan.approved_paths or [],
+            baseline_changed_paths=resume_plan.baseline_changed_paths or [],
+        )
 
-    for attempt in range(1, _MAX_RETRIES + 2):
-        turn_label = _turn_label(phase_label, turn)
+    if resume_plan.action == "resume" and resume_plan.start_step != "plan":
+        print(f"↻ Resuming {turn_label} from the saved {resume_plan.start_step} step.")
+
+    baseline_changed_paths = set(
+        resume_plan.baseline_changed_paths
+        if resume_plan.baseline_changed_paths is not None
+        else _implementation_changed_paths(exec_ctx)
+    )
+    feedback: str | None = resume_plan.feedback
+    plan_path = paths.implementation_plan_path(turn.turn_index, turn.owner_title, resume_plan.attempt)
+    execution_path = paths.implementation_execution_path(turn.turn_index, turn.owner_title, resume_plan.attempt)
+    validation_path = paths.implementation_validation_path(turn.turn_index, turn.owner_title, resume_plan.attempt)
+    scope_path = paths.implementation_scope_path(turn.turn_index, turn.owner_title, resume_plan.attempt)
+    review_path = paths.implementation_review_path(turn.turn_index, turn.owner_title, resume_plan.attempt)
+
+    for attempt in range(resume_plan.attempt, _MAX_RETRIES + 2):
+        start_step = resume_plan.start_step if attempt == resume_plan.attempt else "plan"
         validation_contract = load_validation_contract(exec_ctx.company) or ensure_validation_contract(exec_ctx.company)
         validation_contract_json = json.dumps(validation_contract, indent=2)
         validation_contract_markdown = render_validation_contract_markdown(validation_contract)
+        plan_path = paths.implementation_plan_path(turn.turn_index, turn.owner_title, attempt)
+        execution_path = paths.implementation_execution_path(turn.turn_index, turn.owner_title, attempt)
+        validation_path = paths.implementation_validation_path(turn.turn_index, turn.owner_title, attempt)
+        scope_path = paths.implementation_scope_path(turn.turn_index, turn.owner_title, attempt)
+        review_path = paths.implementation_review_path(turn.turn_index, turn.owner_title, attempt)
 
-        plan_context = {
-            "implementation_plan_request": build_implementation_plan_request(phase_label, turn),
-            "architecture": architecture_json,
-            "execution_plan": execution_plan_json,
-            "current_phase": current_phase_json,
-            "phase_design": phase_design_content,
-            "scheduled_turn": turn_summary,
-            "validation_contract_json": validation_contract_json,
-            "validation_contract_markdown": validation_contract_markdown,
-        }
-        plan_content = _invoke_agent_plan_with_progress(
-            owner_agent,
-            plan_context,
-            f"{turn_label} Implementation Plan",
-            feedback=feedback,
-            attempt=attempt,
-        )
-        _write_text_artifact(paths.implementation_plan_path(turn.turn_index, turn.owner_title, attempt), plan_content)
+        if start_step == "plan":
+            plan_context = {
+                "implementation_plan_request": build_implementation_plan_request(phase_label, turn),
+                "architecture": architecture_json,
+                "execution_plan": execution_plan_json,
+                "current_phase": current_phase_json,
+                "phase_design": phase_design_content,
+                "scheduled_turn": turn_summary,
+                "validation_contract_json": validation_contract_json,
+                "validation_contract_markdown": validation_contract_markdown,
+            }
+            plan_content = _invoke_agent_plan_with_progress(
+                owner_agent,
+                plan_context,
+                f"{turn_label} Implementation Plan",
+                feedback=feedback,
+                attempt=attempt,
+            )
+            _write_text_artifact(plan_path, plan_content)
+            _record_implementation_turn_step(
+                exec_ctx,
+                phase_id=phase_id,
+                paths=paths,
+                turn=turn,
+                step="plan",
+                attempt=attempt,
+                metadata={"baseline_changed_paths": sorted(baseline_changed_paths)},
+            )
+        else:
+            plan_content = plan_path.read_text(encoding="utf-8")
 
-        execution_context = {
-            "implementation_execute_request": build_implementation_execute_request(phase_label, turn),
-            "architecture": architecture_json,
-            "execution_plan": execution_plan_json,
-            "current_phase": current_phase_json,
-            "phase_design": phase_design_content,
-            "scheduled_turn": turn_summary,
-            "validation_contract_json": validation_contract_json,
-            "validation_contract_markdown": validation_contract_markdown,
-        }
-        execution_content = _invoke_agent_execute_with_progress(
-            owner_agent,
-            execution_context,
-            f"{turn_label} Implementation Execute",
-            plan=plan_content,
-            feedback=feedback,
-            attempt=attempt,
-        )
-        _write_text_artifact(
-            paths.implementation_execution_path(turn.turn_index, turn.owner_title, attempt),
-            execution_content,
-        )
+        if start_step in ("plan", "execute"):
+            execution_context = {
+                "implementation_execute_request": build_implementation_execute_request(phase_label, turn),
+                "architecture": architecture_json,
+                "execution_plan": execution_plan_json,
+                "current_phase": current_phase_json,
+                "phase_design": phase_design_content,
+                "scheduled_turn": turn_summary,
+                "validation_contract_json": validation_contract_json,
+                "validation_contract_markdown": validation_contract_markdown,
+            }
+            execution_content = _invoke_agent_execute_with_progress(
+                owner_agent,
+                execution_context,
+                f"{turn_label} Implementation Execute",
+                plan=plan_content,
+                feedback=feedback,
+                attempt=attempt,
+            )
+            _write_text_artifact(execution_path, execution_content)
+            _record_implementation_turn_step(
+                exec_ctx,
+                phase_id=phase_id,
+                paths=paths,
+                turn=turn,
+                step="execute",
+                attempt=attempt,
+                metadata={"baseline_changed_paths": sorted(baseline_changed_paths)},
+            )
+        else:
+            execution_content = execution_path.read_text(encoding="utf-8")
 
-        validation_contract = load_validation_contract(exec_ctx.company) or ensure_validation_contract(exec_ctx.company)
-        validation_report_obj = run_validation_contract(validation_contract, workspace=exec_ctx.workdir)
-        validation_report = render_validation_report_markdown(validation_report_obj, report_title=turn_label)
-        _write_text_artifact(
-            paths.implementation_validation_path(turn.turn_index, turn.owner_title, attempt),
-            validation_report,
-        )
+        if start_step in ("plan", "execute", "validate"):
+            validation_contract = load_validation_contract(exec_ctx.company) or ensure_validation_contract(
+                exec_ctx.company
+            )
+            validation_report_obj = run_validation_contract(validation_contract, workspace=exec_ctx.workdir)
+            validation_report = render_validation_report_markdown(validation_report_obj, report_title=turn_label)
+            _write_text_artifact(validation_path, validation_report)
+
+            changed_paths = [
+                path for path in _implementation_changed_paths(exec_ctx) if path not in baseline_changed_paths
+            ]
+            scope_artifact = _render_implementation_scope_artifact(phase_label, turn, changed_paths)
+            _write_text_artifact(scope_path, scope_artifact)
+            _record_implementation_turn_step(
+                exec_ctx,
+                phase_id=phase_id,
+                paths=paths,
+                turn=turn,
+                step="validate",
+                attempt=attempt,
+                metadata={
+                    "baseline_changed_paths": sorted(baseline_changed_paths),
+                    "passed": validation_report_obj.passed,
+                },
+            )
+        else:
+            validation_report = validation_path.read_text(encoding="utf-8")
+            scope_artifact = scope_path.read_text(encoding="utf-8")
+            validation_report_obj = type(
+                "ValidationResult", (), {"passed": statuses["validate"].metadata.get("passed") is True}
+            )()
 
         changed_paths = [path for path in _implementation_changed_paths(exec_ctx) if path not in baseline_changed_paths]
-        scope_artifact = _render_implementation_scope_artifact(phase_label, turn, changed_paths)
-        _write_text_artifact(
-            paths.implementation_scope_path(turn.turn_index, turn.owner_title, attempt), scope_artifact
-        )
 
         review, err = _run_development_lead_review(
             reviewer_agent,
@@ -1610,26 +2198,45 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
             validation_contract=validation_contract,
             validation_report=validation_report,
             scope_artifact=scope_artifact,
-            review_path=paths.implementation_review_path(turn.turn_index, turn.owner_title, attempt),
+            review_path=review_path,
             assigned_standards=assigned_standards,
         )
         if err is not None:
             return err
         assert review is not None  # noqa: S101
+        _record_implementation_turn_step(
+            exec_ctx,
+            phase_id=phase_id,
+            paths=paths,
+            turn=turn,
+            step="review",
+            attempt=attempt,
+            metadata={
+                "baseline_changed_paths": sorted(baseline_changed_paths),
+                "decision": review["decision"],
+                "summary": review["summary"],
+                "scope_findings": review["scope_findings"],
+                "standards_findings": review["standards_findings"],
+                "validation_findings": review["validation_findings"],
+                "required_follow_up": review["required_follow_up"],
+                "approved_paths": changed_paths if review["decision"] == "approve" else [],
+                "changed_paths": changed_paths,
+            },
+        )
 
         if review["decision"] == "approve" and validation_report_obj.passed:
-            commit_name = f"{phase_data.get('id', f'phase_{turn.turn_index}')}:turn:{turn.turn_index}"
-            approved_paths = changed_paths if not exec_ctx.options.stage_all else None
-            err = _try_commit(
-                exec_ctx.workdir,
-                commit_name,
-                exec_ctx.options.no_commit,
-                stage_all=exec_ctx.options.stage_all,
+            approved_paths = changed_paths if not exec_ctx.options.stage_all else changed_paths
+            return _commit_implementation_turn(
+                exec_ctx,
+                phase_id=phase_id,
+                phase_data=phase_data,
+                phase_label=phase_label,
+                paths=paths,
+                turn=turn,
+                attempt=attempt,
                 approved_paths=approved_paths,
+                baseline_changed_paths=sorted(baseline_changed_paths),
             )
-            if err is not None:
-                return err
-            return None
 
         feedback = _implementation_retry_feedback(
             review,
@@ -1676,7 +2283,9 @@ def _run_phase_implementation_loop(
         if reviewer_entry is None:
             raise RuntimeError(f"Phase team for {label} does not include the Development Lead reviewer.")
 
+        phase_id = str(phase_data.get("id", f"phase_{phase_index + 1}"))
         completed_task_ids: set[str] = set()
+        allow_skip = True
         turn_index = 1
         while True:
             turn = next_phase_implementation_turn(
@@ -1687,6 +2296,20 @@ def _run_phase_implementation_loop(
             )
             if turn is None:
                 break
+
+            commit_status = _evaluate_implementation_commit_status(
+                exec_ctx,
+                phase_id=phase_id,
+                paths=paths,
+                turn=turn,
+            )
+            if allow_skip and commit_status.is_current:
+                print(f"↩ Skipping {_turn_label(label, turn)} (already committed)")
+                completed_task_ids.update(turn.task_ids)
+                turn_index += 1
+                continue
+
+            allow_skip = False
 
             err = _run_phase_implementation_turn(
                 exec_ctx,
@@ -2402,11 +3025,30 @@ def _try_commit(
     approved_paths: list[str] | None = None,
 ) -> int | None:
     """Attempt a git commit.  Returns an error code on failure, else *None*."""
+    _commit_hash, err = _try_commit_with_hash(
+        workdir,
+        phase_name,
+        no_commit,
+        stage_all=stage_all,
+        approved_paths=approved_paths,
+    )
+    return err
+
+
+def _try_commit_with_hash(
+    workdir: Path,
+    phase_name: str,
+    no_commit: bool,
+    *,
+    stage_all: bool,
+    approved_paths: list[str] | None = None,
+) -> tuple[str | None, int | None]:
+    """Attempt a git commit and return ``(commit_hash, err)``."""
     if no_commit:
         print("  (skipping git commit – --no-commit)")
-        return None
+        return None, None
     try:
-        commit_state(
+        commit_hash = commit_state(
             workdir,
             phase_name,
             stage_all=stage_all,
@@ -2414,8 +3056,8 @@ def _try_commit(
         )
     except GitError as exc:
         print(f"\nError committing {phase_name}: {exc}", file=sys.stderr)
-        return 1
-    return None
+        return None, 1
+    return commit_hash, None
 
 
 def _init_pipeline_state(workdir: Path) -> tuple[dict, Path]:
