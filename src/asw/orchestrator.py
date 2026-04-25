@@ -1718,6 +1718,7 @@ def _classify_implementation_turn_resume(
     phase_id: str,
     paths: PhaseArtifactPaths,
     turn: PhaseImplementationTurn,
+    force_rerun_from_plan: bool = False,
 ) -> tuple[ImplementationTurnResumePlan, dict[str, ImplementationTurnStepStatus]]:
     """Return how one implementation turn should resume from persisted state."""
     statuses = {
@@ -1732,6 +1733,9 @@ def _classify_implementation_turn_resume(
     }
     latest_attempt = max((status.attempt or 0) for status in statuses.values())
     next_attempt = max(1, latest_attempt + 1)
+
+    if force_rerun_from_plan:
+        return ImplementationTurnResumePlan(action="rerun", attempt=next_attempt, start_step="plan"), statuses
 
     if all(statuses[step].is_current for step in ("plan", "execute", "validate", "review")):
         review_metadata = statuses["review"].metadata
@@ -2019,6 +2023,7 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
     reviewer_entry: dict,
     paths: PhaseArtifactPaths,
     turn: PhaseImplementationTurn,
+    force_rerun_from_plan: bool = False,
 ) -> int | None:
     """Run plan, execute, validate, review, and commit for one implementation turn."""
     phase_id = str(phase_data.get("id", f"phase_{turn.turn_index}"))
@@ -2050,6 +2055,7 @@ def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-ma
         phase_id=phase_id,
         paths=paths,
         turn=turn,
+        force_rerun_from_plan=force_rerun_from_plan,
     )
     if resume_plan.action == "commit":
         return _commit_implementation_turn(
@@ -2286,6 +2292,7 @@ def _run_phase_implementation_loop(
         phase_id = str(phase_data.get("id", f"phase_{phase_index + 1}"))
         completed_task_ids: set[str] = set()
         allow_skip = True
+        force_downstream_rerun_from_plan = False
         turn_index = 1
         while True:
             turn = next_phase_implementation_turn(
@@ -2321,11 +2328,13 @@ def _run_phase_implementation_loop(
                 reviewer_entry=reviewer_entry,
                 paths=paths,
                 turn=turn,
+                force_rerun_from_plan=force_downstream_rerun_from_plan,
             )
             if err is not None:
                 return err
 
             completed_task_ids.update(turn.task_ids)
+            force_downstream_rerun_from_plan = True
             turn_index += 1
 
     return None

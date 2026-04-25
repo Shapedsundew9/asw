@@ -866,6 +866,44 @@ def _write_single_turn_phase_artifacts(company: Path) -> PhaseArtifactPaths:
     return paths
 
 
+def _two_turn_task_mapping() -> dict[str, object]:
+    """Return a minimal two-turn task mapping for invalidation tests."""
+    return {
+        "tasks": [
+            {
+                "id": "implement_first",
+                "title": "Implement the first slice",
+                "owner": "Python Backend Developer",
+                "objective": "Apply the first implementation change.",
+                "depends_on": [],
+                "deliverables": ["Code change"],
+                "acceptance_criteria": ["Validation remains adequate"],
+            },
+            {
+                "id": "implement_second",
+                "title": "Implement the second slice",
+                "owner": "Python Backend Developer",
+                "objective": "Apply the second implementation change.",
+                "depends_on": ["implement_first"],
+                "deliverables": ["Code change"],
+                "acceptance_criteria": ["Validation remains adequate"],
+            },
+        ]
+    }
+
+
+def _write_two_turn_phase_artifacts(company: Path) -> PhaseArtifactPaths:
+    """Write a minimal two-turn prepared phase artifact bundle."""
+    paths = build_phase_artifact_paths(company, 0)
+    paths.final_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.final_path.write_text(
+        "# Phase Design: Implementation Slice\n\n## Phase Summary\n- Deliver the current slice.\n",
+        encoding="utf-8",
+    )
+    write_phase_task_mapping(_two_turn_task_mapping(), paths, phase_label="phase_1 - Implementation Slice")
+    return paths
+
+
 def _make_single_turn_exec_ctx(
     tmp_path: Path,
     mock_llm: MagicMock,
@@ -874,6 +912,73 @@ def _make_single_turn_exec_ctx(
 ) -> tuple[PipelineExecutionContext, str, str, str, PhaseArtifactPaths]:
     """Return a minimal execution context for direct implementation-loop tests."""
     _setup_git_repo(tmp_path)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild the implementation slice.\n", encoding="utf-8")
+
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+
+    architecture_json = _extract_json_block(_CANNED_ARCH)
+    execution_plan_json = _single_turn_execution_plan_json()
+    roster_json = _single_turn_roster_json()
+    (company / "artifacts" / "architecture.json").write_text(architecture_json, encoding="utf-8")
+    (company / "artifacts" / "execution_plan.json").write_text(execution_plan_json, encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+
+    paths = _write_single_turn_phase_artifacts(company)
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=mock_llm,
+        options=PipelineRunOptions(no_commit=no_commit),
+    )
+    return exec_ctx, architecture_json, execution_plan_json, roster_json, paths
+
+
+def _make_two_turn_exec_ctx(
+    tmp_path: Path,
+    mock_llm: MagicMock,
+    *,
+    no_commit: bool,
+) -> tuple[PipelineExecutionContext, str, str, str, PhaseArtifactPaths]:
+    """Return a two-turn execution context for invalidation and resume tests."""
+    _setup_git_repo(tmp_path)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild the implementation slice.\n", encoding="utf-8")
+
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+
+    architecture_json = _extract_json_block(_CANNED_ARCH)
+    execution_plan_json = _single_turn_execution_plan_json()
+    roster_json = _single_turn_roster_json()
+    (company / "artifacts" / "architecture.json").write_text(architecture_json, encoding="utf-8")
+    (company / "artifacts" / "execution_plan.json").write_text(execution_plan_json, encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+
+    paths = _write_two_turn_phase_artifacts(company)
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=mock_llm,
+        options=PipelineRunOptions(no_commit=no_commit),
+    )
+    return exec_ctx, architecture_json, execution_plan_json, roster_json, paths
+
+
+def _make_single_turn_non_git_exec_ctx(
+    tmp_path: Path,
+    mock_llm: MagicMock,
+    *,
+    no_commit: bool,
+) -> tuple[PipelineExecutionContext, str, str, str, PhaseArtifactPaths]:
+    """Return a single-turn execution context without a git repository."""
     vision = tmp_path / "vision.md"
     vision.write_text("# Vision\n\nBuild the implementation slice.\n", encoding="utf-8")
 
@@ -1047,6 +1152,76 @@ def test_run_phase_implementation_loop_retries_when_validation_fails(tmp_path: P
     second_plan_prompt = mock_llm.invoke_plan.call_args_list[1].args[1]
     assert "Fix the failing command validations before rerunning this same turn." in second_plan_prompt
     mock_commit.assert_called_once()
+
+
+def test_run_phase_implementation_loop_persists_turn_step_metadata(tmp_path: Path) -> None:
+    """A successful turn should persist the expected metadata for each saved step."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_review_payload("approve", summary="Scope and standards look good.")],
+    )
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        (tmp_path / "feature.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, _paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", return_value="abc123"):
+        result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert result is None
+
+    state = read_pipeline_state(tmp_path)
+    assert state == exec_ctx.state
+    assert state is not None
+
+    plan_record = state["phases"]["phase-loop:phase_1:turn:1:plan"]
+    execute_record = state["phases"]["phase-loop:phase_1:turn:1:execute"]
+    validate_record = state["phases"]["phase-loop:phase_1:turn:1:validate"]
+    review_record = state["phases"]["phase-loop:phase_1:turn:1:review"]
+    commit_record = state["phases"]["phase-loop:phase_1:turn:1:commit"]
+
+    expected_common_metadata = {
+        "owner_title": "Python Backend Developer",
+        "task_ids": ["implement_slice"],
+        "attempt": 1,
+        "baseline_changed_paths": ["vision.md"],
+    }
+
+    assert plan_record["metadata"] == expected_common_metadata
+    assert execute_record["metadata"] == expected_common_metadata
+    assert validate_record["metadata"] == {
+        **expected_common_metadata,
+        "passed": True,
+    }
+    assert review_record["metadata"] == {
+        **expected_common_metadata,
+        "decision": "approve",
+        "summary": "Scope and standards look good.",
+        "scope_findings": [],
+        "standards_findings": [],
+        "validation_findings": [],
+        "required_follow_up": [],
+        "approved_paths": ["feature.py"],
+        "changed_paths": ["feature.py"],
+    }
+    assert commit_record["metadata"] == {
+        **expected_common_metadata,
+        "approved_paths": ["feature.py"],
+        "commit_hash": "abc123",
+    }
 
 
 def test_run_phase_implementation_loop_skips_current_committed_turns_on_resume(tmp_path: Path) -> None:
@@ -1234,6 +1409,146 @@ def test_run_phase_implementation_loop_refuses_commit_when_unapproved_paths_appe
     assert result == 1
 
 
+def test_run_phase_implementation_loop_allows_stage_all_override_for_extra_paths(tmp_path: Path) -> None:
+    """Stage-all commits should bypass the approved-path scope guard intentionally."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_review_payload("approve", summary="Scope and standards look good.")],
+    )
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        (tmp_path / "feature.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, _paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=False,
+    )
+    exec_ctx.options = PipelineRunOptions(no_commit=False, stage_all=True)
+    original_review = getattr(orchestrator_module, "_run_development_lead_review")
+
+    def review_with_extra_path(*args: object, **kwargs: object) -> tuple[dict[str, object] | None, int | None]:
+        review, err = original_review(*args, **kwargs)
+        (tmp_path / "unexpected.py").write_text("print('unexpected')\n", encoding="utf-8")
+        return review, err
+
+    with (
+        patch("asw.orchestrator._run_development_lead_review", side_effect=review_with_extra_path),
+        patch("asw.orchestrator.commit_state", return_value="abc123") as mock_commit,
+    ):
+        result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert result is None
+    assert mock_commit.call_count == 1
+    assert mock_commit.call_args.kwargs["stage_all"] is True
+    assert mock_commit.call_args.kwargs["approved_paths"] is None
+
+
+def test_run_phase_implementation_loop_resumes_safely_in_non_git_workdir(tmp_path: Path) -> None:
+    """A non-git workdir should persist empty changed-path evidence and still resume safely."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_review_payload("approve", summary="Scope and standards look good.")],
+    )
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = [_implementation_execute_responses()[0]]
+    exec_ctx, architecture_json, execution_plan_json, roster_json, paths = _make_single_turn_non_git_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", return_value="abc123"):
+        first_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert first_result is None
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    review_metadata = state["phases"]["phase-loop:phase_1:turn:1:review"]["metadata"]
+    commit_metadata = state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]
+    assert review_metadata["changed_paths"] == []
+    assert review_metadata["approved_paths"] == []
+    assert commit_metadata["approved_paths"] == []
+    assert paths.implementation_commit_path(1, "Python Backend Developer", 1).is_file()
+
+    resumed_llm = MagicMock()
+    resumed_llm.invoke_plan.side_effect = AssertionError("plan should not rerun for a current committed turn")
+    resumed_llm.invoke_execute.side_effect = AssertionError("execute should not rerun for a current committed turn")
+    resumed_llm.invoke.side_effect = AssertionError("review should not rerun for a current committed turn")
+    exec_ctx.llm = resumed_llm
+
+    with patch("asw.orchestrator.commit_state", side_effect=AssertionError("commit should not rerun")):
+        second_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert second_result is None
+
+
+def test_run_phase_implementation_loop_persists_no_op_commit_and_skips_it_on_rerun(tmp_path: Path) -> None:
+    """An empty commit hash should still persist durable no-op commit evidence."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_review_payload("approve", summary="Scope and standards look good.")],
+    )
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = [_implementation_execute_responses()[0]]
+    exec_ctx, architecture_json, execution_plan_json, roster_json, paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", return_value=""):
+        first_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert first_result is None
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    commit_metadata = state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]
+    commit_summary = paths.implementation_commit_path(1, "Python Backend Developer", 1).read_text(encoding="utf-8")
+    assert commit_metadata["approved_paths"] == []
+    assert commit_metadata["commit_hash"] == ""
+    assert "(no commit created)" in commit_summary
+
+    resumed_llm = MagicMock()
+    resumed_llm.invoke_plan.side_effect = AssertionError("plan should not rerun for a current no-op commit")
+    resumed_llm.invoke_execute.side_effect = AssertionError("execute should not rerun for a current no-op commit")
+    resumed_llm.invoke.side_effect = AssertionError("review should not rerun for a current no-op commit")
+    exec_ctx.llm = resumed_llm
+
+    with patch("asw.orchestrator.commit_state", side_effect=AssertionError("commit should not rerun")):
+        second_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert second_result is None
+
+
 def test_run_phase_implementation_loop_invalidates_downstream_turns_when_validation_contract_changes(
     tmp_path: Path,
 ) -> None:
@@ -1344,6 +1659,341 @@ def test_run_phase_implementation_loop_invalidates_downstream_turns_when_validat
 
     assert second_result is None
     assert resumed_llm.invoke_plan.call_count == 2
+
+
+def test_run_phase_implementation_loop_invalidates_downstream_turns_when_phase_design_changes(
+    tmp_path: Path,
+) -> None:
+    """A changed final phase design should rerun the affected turn and later turns."""
+    first_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First turn approved."),
+            _review_payload("approve", summary="Second turn approved."),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / f"feature_{execute_attempts['count']}.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    first_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    first_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, paths = _make_two_turn_exec_ctx(
+        tmp_path,
+        first_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", side_effect=["abc123", "def456"]):
+        first_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert first_result is None
+
+    paths.final_path.write_text(
+        "# Phase Design: Implementation Slice\n\n## Phase Summary\n- Deliver the current slice with updated sequencing guidance.\n",
+        encoding="utf-8",
+    )
+
+    resumed_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First rerun approved."),
+            _review_payload("approve", summary="Second rerun approved."),
+        ],
+    )
+    resumed_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    resumed_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx.llm = resumed_llm
+
+    with patch("asw.orchestrator.commit_state", side_effect=["ghi789", "jkl012"]):
+        second_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert second_result is None
+    assert resumed_llm.invoke_plan.call_count == 2
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]["attempt"] == 2
+    assert state["phases"]["phase-loop:phase_1:turn:2:commit"]["metadata"]["attempt"] == 2
+
+
+def test_run_phase_implementation_loop_invalidates_downstream_turns_when_role_prompt_changes(
+    tmp_path: Path,
+) -> None:
+    """A changed owner role file should rerun the affected turn and later turns."""
+    first_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First turn approved."),
+            _review_payload("approve", summary="Second turn approved."),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / f"feature_{execute_attempts['count']}.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    first_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    first_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, _paths = _make_two_turn_exec_ctx(
+        tmp_path,
+        first_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", side_effect=["abc123", "def456"]):
+        first_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert first_result is None
+
+    role_path = exec_ctx.company / "roles" / "python_backend_developer.md"
+    role_path.write_text(role_path.read_text(encoding="utf-8") + "\nUpdated role guidance.\n", encoding="utf-8")
+
+    resumed_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First rerun approved."),
+            _review_payload("approve", summary="Second rerun approved."),
+        ],
+    )
+    resumed_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    resumed_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx.llm = resumed_llm
+
+    with patch("asw.orchestrator.commit_state", side_effect=["ghi789", "jkl012"]):
+        second_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert second_result is None
+    assert resumed_llm.invoke_plan.call_count == 2
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]["attempt"] == 2
+    assert state["phases"]["phase-loop:phase_1:turn:2:commit"]["metadata"]["attempt"] == 2
+
+
+def test_run_phase_implementation_loop_invalidates_downstream_turns_when_assigned_standards_change(
+    tmp_path: Path,
+) -> None:
+    """A changed assigned standards file should rerun the affected turn and later turns."""
+    first_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First turn approved."),
+            _review_payload("approve", summary="Second turn approved."),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / f"feature_{execute_attempts['count']}.py").write_text("print('done')\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    first_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    first_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, _paths = _make_two_turn_exec_ctx(
+        tmp_path,
+        first_llm,
+        no_commit=False,
+    )
+
+    with patch("asw.orchestrator.commit_state", side_effect=["abc123", "def456"]):
+        first_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert first_result is None
+
+    standards_path = exec_ctx.company / "standards" / "python_guidelines.md"
+    standards_path.write_text(
+        standards_path.read_text(encoding="utf-8") + "\nAdd one more repository-specific reminder.\n",
+        encoding="utf-8",
+    )
+
+    resumed_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="First rerun approved."),
+            _review_payload("approve", summary="Second rerun approved."),
+        ],
+    )
+    resumed_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    resumed_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx.llm = resumed_llm
+
+    with patch("asw.orchestrator.commit_state", side_effect=["ghi789", "jkl012"]):
+        second_result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert second_result is None
+    assert resumed_llm.invoke_plan.call_count == 2
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]["attempt"] == 2
+    assert state["phases"]["phase-loop:phase_1:turn:2:commit"]["metadata"]["attempt"] == 2
+
+
+def test_resume_skips_current_phase_design_and_reruns_only_downstream_turns_after_standards_change(
+    tmp_path: Path,
+) -> None:
+    """A saved phase design should skip while stale later-turn standards rerun only affected turns."""
+    _setup_git_repo(tmp_path)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild the implementation slice.\n", encoding="utf-8")
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    (company / "artifacts" / "prd.md").write_text(_CANNED_PRD, encoding="utf-8")
+    (company / "artifacts" / "architecture.json").write_text(_extract_json_block(_CANNED_ARCH), encoding="utf-8")
+    execution_plan_json = _extract_json_block(_CANNED_EXECUTION_PLAN)
+    roster_json = _extract_json_block(_CANNED_ROSTER)
+    (company / "artifacts" / "execution_plan.json").write_text(execution_plan_json, encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+
+    phase_data = json.loads(execution_plan_json)["phases"][0]
+    paths = build_phase_artifact_paths(company, 0)
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=MagicMock(),
+        options=PipelineRunOptions(no_commit=False),
+    )
+
+    def fake_agent_loop(_agent: MagicMock, _context: dict, _lint_fn: MagicMock, label: str, **_kwargs: object) -> str:
+        if label.endswith("Design Draft"):
+            return _CANNED_PHASE_DESIGN_DRAFT
+        if label.endswith("Feedback: Development Lead"):
+            return _CANNED_PHASE_FEEDBACK_DEVELOPMENT_LEAD
+        if label.endswith("Feedback: DevOps Engineer"):
+            return _CANNED_PHASE_FEEDBACK_DEVOPS
+        if label.endswith("Feedback: Python Backend Developer"):
+            return _CANNED_PHASE_FEEDBACK_BACKEND
+        if label.endswith("Design Final"):
+            return _CANNED_PHASE_DESIGN_FINAL
+        raise AssertionError(f"Unexpected label: {label}")
+
+    with patch("asw.orchestrator._agent_loop", side_effect=fake_agent_loop):
+        final = _run_or_skip_phase_design_step(
+            exec_ctx,
+            prd_content=_CANNED_PRD,
+            architecture_json=_extract_json_block(_CANNED_ARCH),
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+            phase_data=phase_data,
+            phase_index=0,
+            paths=paths,
+        )
+
+    assert final == _CANNED_PHASE_DESIGN_FINAL
+
+    first_impl_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="Turn 1 approved."),
+            _review_payload("approve", summary="Turn 2 approved."),
+            _review_payload("approve", summary="Turn 3 approved."),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / f"feature_{execute_attempts['count']}.py").write_text("print('done')\n", encoding="utf-8")
+        responses = _implementation_execute_responses()
+        return responses[(execute_attempts["count"] - 1) % len(responses)]
+
+    first_impl_llm.invoke_plan.side_effect = _implementation_plan_responses()
+    first_impl_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx.llm = first_impl_llm
+
+    first_result = _run_phase_implementation_loop(
+        exec_ctx,
+        architecture_json=_extract_json_block(_CANNED_ARCH),
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+
+    assert first_result is None
+
+    standards_path = company / "standards" / "python_guidelines.md"
+    standards_path.write_text(
+        standards_path.read_text(encoding="utf-8") + "\nTighten the backend implementation guidance.\n",
+        encoding="utf-8",
+    )
+
+    with patch("asw.orchestrator._run_phase_design_step", side_effect=AssertionError("phase design should skip")):
+        skipped_final = _run_or_skip_phase_design_step(
+            exec_ctx,
+            prd_content=_CANNED_PRD,
+            architecture_json=_extract_json_block(_CANNED_ARCH),
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+            phase_data=phase_data,
+            phase_index=0,
+            paths=paths,
+        )
+
+    assert skipped_final == _CANNED_PHASE_DESIGN_FINAL
+
+    resumed_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="Turn 2 rerun approved."),
+            _review_payload("approve", summary="Turn 3 rerun approved."),
+        ],
+    )
+    resumed_llm.invoke_plan.side_effect = _implementation_plan_responses()[1:]
+    resumed_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx.llm = resumed_llm
+
+    second_result = _run_phase_implementation_loop(
+        exec_ctx,
+        architecture_json=_extract_json_block(_CANNED_ARCH),
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+
+    assert second_result is None
+    assert resumed_llm.invoke_plan.call_count == 2
+
+    state = read_pipeline_state(tmp_path)
+    assert state is not None
+    assert state["phases"]["phase-loop:phase_1:turn:1:commit"]["metadata"]["attempt"] == 1
+    assert state["phases"]["phase-loop:phase_1:turn:2:commit"]["metadata"]["attempt"] == 2
+    assert state["phases"]["phase-loop:phase_1:turn:3:commit"]["metadata"]["attempt"] == 2
 
 
 def test_full_pipeline(tmp_path: Path) -> None:
