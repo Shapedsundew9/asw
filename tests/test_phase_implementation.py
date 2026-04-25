@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from asw.phase_implementation import next_phase_implementation_turn, phase_implementation_turns, ready_phase_tasks
+from asw.phase_implementation import (
+    lint_development_lead_review_json,
+    next_phase_implementation_turn,
+    phase_implementation_turns,
+    ready_phase_tasks,
+)
 
 _TASK_MAPPING = {
     "tasks": [
@@ -68,6 +73,21 @@ _ROSTER_JSON = json.dumps(
     }
 )
 
+_VALID_DEVELOPMENT_LEAD_REVIEW = """\
+# Development Lead Review: Local Validation
+
+```json
+{
+    "decision": "approve",
+    "summary": "The turn stayed in scope and the validations remain adequate.",
+    "scope_findings": [],
+    "standards_findings": [],
+    "validation_findings": [],
+    "required_follow_up": []
+}
+```
+"""
+
 
 def test_ready_phase_tasks_only_returns_dependency_satisfied_tasks() -> None:
     """Ready-task selection should exclude incomplete dependency chains."""
@@ -123,3 +143,45 @@ def test_next_phase_implementation_turn_rejects_missing_owner_in_roster() -> Non
             completed_task_ids={"prepare_environment", "implement_cli"},
             turn_index=3,
         )
+
+
+def test_lint_development_lead_review_json_accepts_valid_review() -> None:
+    """A valid Development Lead review payload should parse cleanly."""
+    errors, review = lint_development_lead_review_json(_VALID_DEVELOPMENT_LEAD_REVIEW)
+
+    assert errors == []
+    assert review is not None
+    assert review["decision"] == "approve"
+    assert review["required_follow_up"] == []
+
+
+def test_lint_development_lead_review_json_rejects_missing_json_block() -> None:
+    """Review output must contain a fenced JSON block."""
+    errors, review = lint_development_lead_review_json("# Development Lead Review\n\nNo JSON here.")
+
+    assert review is None
+    assert any("fenced ```json``` review block" in error for error in errors)
+
+
+def test_lint_development_lead_review_json_rejects_invalid_field_shapes() -> None:
+    """Review array fields must be present as non-empty-string lists."""
+    invalid_review = _VALID_DEVELOPMENT_LEAD_REVIEW.replace('"scope_findings": [],', '"scope_findings": [1],')
+
+    errors, review = lint_development_lead_review_json(invalid_review)
+
+    assert review is None
+    assert any("scope_findings" in error for error in errors)
+
+
+def test_lint_development_lead_review_json_normalizes_findings_to_revise() -> None:
+    """Approve decisions with findings should be normalized to revise."""
+    flagged_review = _VALID_DEVELOPMENT_LEAD_REVIEW.replace(
+        '"scope_findings": [],',
+        '"scope_findings": ["Touched files outside the scheduled task boundary."],',
+    )
+
+    errors, review = lint_development_lead_review_json(flagged_review)
+
+    assert errors == []
+    assert review is not None
+    assert review["decision"] == "revise"

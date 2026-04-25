@@ -112,6 +112,10 @@ class PhaseArtifactPaths:
             self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_validation.md"
         )
 
+    def implementation_scope_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
+        """Return the implementation scope-evidence artifact path."""
+        return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_scope.md"
+
     def implementation_review_path(self, turn_index: int, role_title: str, attempt: int) -> Path:
         """Return the implementation-review artifact path."""
         return self.artifacts_dir / f"{self._implementation_artifact_stem(turn_index, role_title, attempt)}_review.md"

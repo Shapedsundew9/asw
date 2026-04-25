@@ -24,12 +24,14 @@ from asw.orchestrator import (
     _render_architecture_markdown,
     _run_or_skip_phase_design_step,
     _run_phase_design_step,
+    _run_phase_implementation_loop,
     run_pipeline,
 )
 from asw.phase_preparation import PhaseArtifactPaths, build_phase_artifact_paths
 from asw.phase_tasks import write_phase_task_mapping
 from asw.pipeline import PipelineExecutionContext
 from asw.validation_contract import ensure_validation_contract, validation_contract_paths
+from asw.validation_runner import ValidationCheckResult, ValidationRunReport
 
 # ── Unit tests ──────────────────────────────────────────────────────────
 
@@ -590,6 +592,47 @@ def _phase_preparation_responses() -> list[str]:
     ]
 
 
+def _implementation_plan_responses() -> list[str]:
+    """Return canned planning responses for the implementation loop."""
+    return [
+        """# Implementation Plan: phase_1 - Local Validation Turn 1\n\n## Task Summary\n- Prepare the local environment.\n\n## Planned Changes\n- Apply the approved environment updates for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
+        """# Implementation Plan: phase_1 - Local Validation Turn 2\n\n## Task Summary\n- Implement the approved local workflow.\n\n## Planned Changes\n- Apply the approved backend workflow changes for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
+        """# Implementation Plan: phase_1 - Local Validation Turn 3\n\n## Task Summary\n- Coordinate implementation readiness.\n\n## Planned Changes\n- Update the readiness documentation for the turn.\n\n## Validation Approach\n- Re-run the validation contract after execution.\n\n## Risks\n- None.\n""",
+    ]
+
+
+def _implementation_execute_responses() -> list[str]:
+    """Return canned execution responses for the implementation loop."""
+    return [
+        """# Implementation Execution: phase_1 - Local Validation Turn 1\n\n## Completed Work\n- Completed the environment task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
+        """# Implementation Execution: phase_1 - Local Validation Turn 2\n\n## Completed Work\n- Completed the workflow task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
+        """# Implementation Execution: phase_1 - Local Validation Turn 3\n\n## Completed Work\n- Completed the readiness task.\n\n## Files Changed\n- None.\n\n## Validation Notes\n- Validation contract will be re-run by the orchestrator.\n\n## Follow-Up\n- None.\n""",
+    ]
+
+
+def _implementation_review_responses() -> list[str]:
+    """Return canned approving review responses for the implementation loop."""
+    response = """```json
+{
+  "decision": "approve",
+  "summary": "The turn stayed in scope and the validation coverage remains adequate.",
+  "scope_findings": [],
+  "standards_findings": [],
+  "validation_findings": [],
+  "required_follow_up": []
+}
+```"""
+    return [response, response, response]
+
+
+def _configure_mock_llm(mock: MagicMock, *, invoke_responses: list[str]) -> MagicMock:
+    """Attach invoke, plan, and execute side effects for the full pipeline."""
+    mock.invoke = MagicMock(side_effect=invoke_responses)
+    mock.invoke_plan = MagicMock(side_effect=_implementation_plan_responses())
+    mock.invoke_execute = MagicMock(side_effect=_implementation_execute_responses())
+    return mock
+
+
 _CANNED_PRD_WITH_QUESTIONS = """\
 ## Executive Summary
 
@@ -744,17 +787,265 @@ def _expected_role_output_paths(company: Path) -> list[Path]:
 def _make_mock_llm() -> MagicMock:
     """Create a mock LLM backend that returns canned responses for all phases."""
     mock = MagicMock()
-    mock.invoke = MagicMock(
-        side_effect=[
+    return _configure_mock_llm(
+        mock,
+        invoke_responses=[
             _CANNED_PRD,
             _CANNED_ARCH,
             _CANNED_EXECUTION_PLAN,
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
+            *_implementation_review_responses(),
+        ],
+    )
+
+
+def _single_turn_execution_plan_json() -> str:
+    """Return a minimal execution plan JSON string for a single implementation turn."""
+    return json.dumps(
+        {
+            "phases": [
+                {
+                    "id": "phase_1",
+                    "name": "Implementation Slice",
+                    "selected_team_roles": ["Development Lead", "Python Backend Developer"],
+                }
+            ]
+        }
+    )
+
+
+def _single_turn_roster_json() -> str:
+    """Return a minimal roster JSON string for a single implementation turn."""
+    return json.dumps(
+        {
+            "hired_agents": [
+                {
+                    "title": "Development Lead",
+                    "filename": "development_lead.md",
+                    "assigned_standards": [],
+                },
+                {
+                    "title": "Python Backend Developer",
+                    "filename": "python_backend_developer.md",
+                    "assigned_standards": ["python_guidelines.md"],
+                },
+            ]
+        }
+    )
+
+
+def _single_turn_task_mapping() -> dict[str, object]:
+    """Return a minimal one-turn task mapping."""
+    return {
+        "tasks": [
+            {
+                "id": "implement_slice",
+                "title": "Implement the approved slice",
+                "owner": "Python Backend Developer",
+                "objective": "Apply the approved implementation change for the current slice.",
+                "depends_on": [],
+                "deliverables": ["Code change"],
+                "acceptance_criteria": ["Validation coverage remains adequate"],
+            }
+        ]
+    }
+
+
+def _write_single_turn_phase_artifacts(company: Path) -> PhaseArtifactPaths:
+    """Write a minimal prepared phase artifact bundle for implementation-loop tests."""
+    paths = build_phase_artifact_paths(company, 0)
+    paths.final_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.final_path.write_text(
+        "# Phase Design: Implementation Slice\n\n## Phase Summary\n- Deliver the current slice.\n",
+        encoding="utf-8",
+    )
+    write_phase_task_mapping(_single_turn_task_mapping(), paths, phase_label="phase_1 - Implementation Slice")
+    return paths
+
+
+def _make_single_turn_exec_ctx(
+    tmp_path: Path,
+    mock_llm: MagicMock,
+    *,
+    no_commit: bool,
+) -> tuple[PipelineExecutionContext, str, str, str, PhaseArtifactPaths]:
+    """Return a minimal execution context for direct implementation-loop tests."""
+    _setup_git_repo(tmp_path)
+    vision = tmp_path / "vision.md"
+    vision.write_text("# Vision\n\nBuild the implementation slice.\n", encoding="utf-8")
+
+    company = init_company(tmp_path)
+    ensure_validation_contract(company)
+    (company / "roles" / "python_backend_developer.md").write_text(_CANNED_ROLE, encoding="utf-8")
+
+    architecture_json = _extract_json_block(_CANNED_ARCH)
+    execution_plan_json = _single_turn_execution_plan_json()
+    roster_json = _single_turn_roster_json()
+    (company / "artifacts" / "architecture.json").write_text(architecture_json, encoding="utf-8")
+    (company / "artifacts" / "execution_plan.json").write_text(execution_plan_json, encoding="utf-8")
+    (company / "artifacts" / "roster.json").write_text(roster_json, encoding="utf-8")
+
+    paths = _write_single_turn_phase_artifacts(company)
+    exec_ctx = PipelineExecutionContext(
+        state=new_pipeline_state(),
+        company=company,
+        vision_path=vision,
+        vision_content=vision.read_text(encoding="utf-8"),
+        llm=mock_llm,
+        options=PipelineRunOptions(no_commit=no_commit),
+    )
+    return exec_ctx, architecture_json, execution_plan_json, roster_json, paths
+
+
+def _review_payload(
+    decision: str,
+    *,
+    summary: str,
+    scope_findings: list[str] | None = None,
+    standards_findings: list[str] | None = None,
+    validation_findings: list[str] | None = None,
+    required_follow_up: list[str] | None = None,
+) -> str:
+    """Return a fenced JSON Development Lead review payload."""
+    return (
+        "```json\n"
+        + json.dumps(
+            {
+                "decision": decision,
+                "summary": summary,
+                "scope_findings": scope_findings or [],
+                "standards_findings": standards_findings or [],
+                "validation_findings": validation_findings or [],
+                "required_follow_up": required_follow_up or [],
+            },
+            indent=2,
+        )
+        + "\n```"
+    )
+
+
+def test_run_phase_implementation_loop_retries_same_turn_with_review_feedback(tmp_path: Path) -> None:
+    """A revise decision should rerun the same turn and pass review follow-up into the next plan."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload(
+                "revise",
+                summary="The turn needs a narrower scope.",
+                scope_findings=["Touched files outside the approved task boundary."],
+                required_follow_up=["Reduce the change to the approved task boundary."],
+            ),
+            _review_payload(
+                "approve",
+                summary="The revised turn stayed in scope and the validations remain adequate.",
+            ),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / "feature.py").write_text(f"print({execute_attempts['count']})\n", encoding="utf-8")
+        return (
+            "# Implementation Execution: phase_1 - Implementation Slice Turn 1\n\n"
+            "## Completed Work\n- Updated the feature slice.\n\n"
+            "## Files Changed\n- feature.py\n\n"
+            "## Validation Notes\n- Validation contract reruns in orchestrator.\n\n"
+            "## Follow-Up\n- None.\n"
+        )
+
+    mock_llm.invoke_plan.side_effect = [
+        _implementation_plan_responses()[0],
+        _implementation_plan_responses()[0].replace("approved environment updates", "narrowed approved updates"),
+    ]
+    mock_llm.invoke_execute.side_effect = execute_side_effect
+
+    exec_ctx, architecture_json, execution_plan_json, roster_json, paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=True,
+    )
+
+    result = _run_phase_implementation_loop(
+        exec_ctx,
+        architecture_json=architecture_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+
+    assert result is None
+    assert mock_llm.invoke_plan.call_count == 2
+    assert mock_llm.invoke_execute.call_count == 2
+    second_plan_prompt = mock_llm.invoke_plan.call_args_list[1].args[1]
+    assert "Reduce the change to the approved task boundary." in second_plan_prompt
+    assert paths.implementation_plan_path(1, "Python Backend Developer", 1).is_file()
+    assert paths.implementation_plan_path(1, "Python Backend Developer", 2).is_file()
+    assert paths.implementation_review_path(1, "Python Backend Developer", 1).is_file()
+    assert paths.implementation_review_path(1, "Python Backend Developer", 2).is_file()
+
+
+def test_run_phase_implementation_loop_retries_when_validation_fails(tmp_path: Path) -> None:
+    """Failing command validations should block commit and force another turn attempt."""
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
+            _review_payload("approve", summary="Scope and standards look good."),
+            _review_payload("approve", summary="Scope and standards look good."),
+        ],
+    )
+    execute_attempts = {"count": 0}
+
+    def execute_side_effect(*_args: object, **_kwargs: object) -> str:
+        execute_attempts["count"] += 1
+        (tmp_path / "feature.py").write_text(f"print({execute_attempts['count']})\n", encoding="utf-8")
+        return _implementation_execute_responses()[0]
+
+    mock_llm.invoke_plan.side_effect = [_implementation_plan_responses()[0], _implementation_plan_responses()[0]]
+    mock_llm.invoke_execute.side_effect = execute_side_effect
+    exec_ctx, architecture_json, execution_plan_json, roster_json, _paths = _make_single_turn_exec_ctx(
+        tmp_path,
+        mock_llm,
+        no_commit=False,
+    )
+    failed_report = ValidationRunReport(
+        results=[
+            ValidationCheckResult(
+                validation_id="unit",
+                title="Unit tests",
+                kind="command",
+                status="failed",
+                success_criteria=["Tests pass"],
+                protects=["Implementation slice"],
+                always_run=False,
+                command="pytest",
+                working_directory=".",
+                exit_code=1,
+                stdout="",
+                stderr="failure",
+            )
         ]
     )
-    return mock
+    passed_report = ValidationRunReport(results=[])
+
+    with (
+        patch("asw.orchestrator.run_validation_contract", side_effect=[failed_report, passed_report]),
+        patch("asw.orchestrator.commit_state", return_value="abc123") as mock_commit,
+    ):
+        result = _run_phase_implementation_loop(
+            exec_ctx,
+            architecture_json=architecture_json,
+            execution_plan_json=execution_plan_json,
+            roster_json=roster_json,
+        )
+
+    assert result is None
+    assert mock_llm.invoke_plan.call_count == 2
+    assert mock_llm.invoke_execute.call_count == 2
+    second_plan_prompt = mock_llm.invoke_plan.call_args_list[1].args[1]
+    assert "Fix the failing command validations before rerunning this same turn." in second_plan_prompt
+    mock_commit.assert_called_once()
 
 
 def test_full_pipeline(tmp_path: Path) -> None:
@@ -861,16 +1152,17 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_PRD_WITH_QUESTIONS,
             _CANNED_ARCH,
             _CANNED_EXECUTION_PLAN,
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -893,7 +1185,7 @@ def test_prd_founder_answers_are_applied_locally_without_extra_llm_call(tmp_path
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14
 
     prd_content = (tmp_path / ".company" / "artifacts" / "prd.md").read_text(encoding="utf-8")
     assert "- Answer: PostgreSQL" in prd_content
@@ -906,9 +1198,9 @@ def test_devops_execution_revision_requires_reapproved_proposal(tmp_path: Path) 
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_PRD,
             _CANNED_ARCH,
             _CANNED_EXECUTION_PLAN,
@@ -916,7 +1208,8 @@ def test_devops_execution_revision_requires_reapproved_proposal(tmp_path: Path) 
             _CANNED_ROLE,
             *_phase_preparation_responses(),
             _CANNED_DEVOPS_PROPOSAL,
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -938,10 +1231,10 @@ def test_devops_execution_revision_requires_reapproved_proposal(tmp_path: Path) 
         )
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 12
+    assert mock_llm.invoke.call_count == 15
     bash_calls = [call for call in mock_execute.call_args_list if call.args and call.args[0][0] == "bash"]
     assert len(bash_calls) == 1
-    assert "Tighten the safety summary." in mock_llm.invoke.call_args_list[-1].args[1]
+    assert any("Tighten the safety summary." in call.args[1] for call in mock_llm.invoke.call_args_list)
 
 
 def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> None:
@@ -950,16 +1243,17 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_PRD_WITH_QUESTIONS,
             _CANNED_ARCH_WITH_QUESTIONS,
             _CANNED_EXECUTION_PLAN_WITH_QUESTIONS,
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -990,7 +1284,7 @@ def test_founder_answers_across_phases_are_applied_locally(tmp_path: Path) -> No
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14
 
     company = tmp_path / ".company" / "artifacts"
     assert '"answer": "Yes"' in (company / "architecture.json").read_text(encoding="utf-8")
@@ -1005,9 +1299,9 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
     vision.write_text("# Vision\n\nBuild a CLI tool.\n")
     _setup_git_repo(tmp_path)
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_PRD_WITH_QUESTIONS,
             _CANNED_PRD,
             _CANNED_ARCH,
@@ -1015,7 +1309,8 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -1042,7 +1337,7 @@ def test_request_more_questions_reruns_with_current_artifact_and_answers(tmp_pat
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 12
+    assert mock_llm.invoke.call_count == 15
 
     second_user_prompt = mock_llm.invoke.call_args_list[1].args[1]
     assert "### CURRENT_PRD" in second_user_prompt
@@ -1099,9 +1394,9 @@ graph TD
 ```
 """
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_PRD,
             _CANNED_ARCH_WITH_QUESTIONS,
             arch_without_new_question,
@@ -1110,7 +1405,8 @@ graph TD
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -1141,7 +1437,7 @@ graph TD
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 13
+    assert mock_llm.invoke.call_count == 16
     architecture_json = (tmp_path / ".company" / "artifacts" / "architecture.json").read_text(encoding="utf-8")
     assert '"question": "Do we need authentication in Phase 1?"' in architecture_json
     assert '"answer": "No"' in architecture_json
@@ -1355,7 +1651,7 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
     )
     write_pipeline_state(tmp_path, state)
 
-    mock_llm = MagicMock()
+    mock_llm = _configure_mock_llm(MagicMock(), invoke_responses=_implementation_review_responses())
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
@@ -1366,8 +1662,8 @@ def test_resume_skips_completed_phases(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    # LLM should NOT have been called – all phases were skipped.
-    mock_llm.invoke.assert_not_called()
+    # Pre-implementation phases were skipped; only the three implementation reviews ran.
+    assert mock_llm.invoke.call_count == 3
 
 
 def test_phase_design_input_paths_include_validation_contract(tmp_path: Path) -> None:
@@ -1618,7 +1914,7 @@ def test_resume_reruns_missing_artifact(tmp_path: Path) -> None:
 
     assert result == 0
     # LLM was called because prd.md was missing, triggering all downstream phases.
-    assert mock_llm.invoke.call_count == 11  # All phases ran.
+    assert mock_llm.invoke.call_count == 14  # All phases ran plus three implementation reviews.
     assert (company / "artifacts" / "prd.md").is_file()
 
 
@@ -1637,7 +1933,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=[GitError("commit failed"), "", "", "", ""],
+            side_effect=[GitError("commit failed"), "", "", "", "", "", "", ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -1651,7 +1947,7 @@ def test_prd_commit_failure_is_retried_without_rerunning_prd(tmp_path: Path) -> 
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -1673,7 +1969,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         patch("asw.orchestrator.subprocess.run", return_value=_SUCCESSFUL_DEVOPS_EXECUTION),
         patch(
             "asw.orchestrator.commit_state",
-            side_effect=["", "", "", GitError("commit failed"), ""],
+            side_effect=["", "", "", GitError("commit failed"), "", "", "", ""],
         ),
     ):
         first_result = run_pipeline(vision_path=vision, workdir=tmp_path)
@@ -1687,7 +1983,7 @@ def test_hiring_commit_failure_is_retried_without_rerunning_roles(tmp_path: Path
         second_result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert second_result == 0
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14
 
     state = read_pipeline_state(tmp_path)
     assert state is not None
@@ -1752,8 +2048,10 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
     )
     write_pipeline_state(tmp_path, state)
 
-    mock_llm = MagicMock()
-    mock_llm.invoke = MagicMock(side_effect=[_CANNED_ROLE, *_phase_preparation_responses()])
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[_CANNED_ROLE, *_phase_preparation_responses(), *_implementation_review_responses()],
+    )
 
     with (
         patch("asw.orchestrator.get_backend", return_value=mock_llm),
@@ -1763,7 +2061,7 @@ def test_resume_reruns_missing_role_file(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path, options=PipelineRunOptions(no_commit=True))
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 7
+    assert mock_llm.invoke.call_count == 10
     assert (company / "roles" / "python_backend_developer.md").is_file()
 
 
@@ -1830,7 +2128,7 @@ def test_restart_flag_wipes_company(tmp_path: Path) -> None:
 
     assert result == 0
     # All planning and phase-preparation LLM calls should have been made (no skipping).
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14
 
 
 def test_tracked_input_change_continue(tmp_path: Path) -> None:
@@ -1848,15 +2146,16 @@ def test_tracked_input_change_continue(tmp_path: Path) -> None:
 
     vision.write_text("# Vision v2\n\nUpdated vision.\n")
 
-    mock_llm = _make_mock_llm()
-    mock_llm.invoke = MagicMock(
-        side_effect=[
+    mock_llm = _configure_mock_llm(
+        MagicMock(),
+        invoke_responses=[
             _CANNED_ARCH,
             _CANNED_EXECUTION_PLAN,
             _CANNED_ROSTER,
             _CANNED_ROLE,
             *_phase_preparation_responses(),
-        ]
+            *_implementation_review_responses(),
+        ],
     )
 
     with (
@@ -1869,7 +2168,7 @@ def test_tracked_input_change_continue(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 10
+    assert mock_llm.invoke.call_count == 13
 
 
 def test_tracked_input_change_restart(tmp_path: Path) -> None:
@@ -1899,4 +2198,4 @@ def test_tracked_input_change_restart(tmp_path: Path) -> None:
         result = run_pipeline(vision_path=vision, workdir=tmp_path)
 
     assert result == 0
-    assert mock_llm.invoke.call_count == 11
+    assert mock_llm.invoke.call_count == 14

@@ -89,6 +89,9 @@ def test_build_phase_artifact_paths_uses_stable_names(tmp_path: Path) -> None:
     assert paths.implementation_validation_path(1, "Python Backend Developer", 2).name == (
         "01_turn_01_python_backend_developer_attempt_2_validation.md"
     )
+    assert paths.implementation_scope_path(1, "Python Backend Developer", 2).name == (
+        "01_turn_01_python_backend_developer_attempt_2_scope.md"
+    )
     assert paths.implementation_review_path(1, "Python Backend Developer", 2).name == (
         "01_turn_01_python_backend_developer_attempt_2_review.md"
     )

@@ -38,12 +38,21 @@ from asw.founder_questions import (
     _render_founder_question_section,
 )
 from asw.gates import FounderReviewResult, founder_approve_devops_execution, founder_review
-from asw.git import GitError, commit_state, is_git_repo
+from asw.git import GitError, commit_state, is_git_repo, repo_root, worktree_changed_paths
 from asw.hiring import _expected_role_paths, _lint_roster, _write_roster
 from asw.linters.json_lint import validate_architecture
 from asw.linters.markdown import validate_checklist, validate_mermaid, validate_sections
 from asw.llm.backend import LLMBackend, get_backend
 from asw.llm.errors import LLMInvocationError
+from asw.phase_implementation import (
+    PhaseImplementationTurn,
+    build_development_lead_review_request,
+    build_implementation_execute_request,
+    build_implementation_plan_request,
+    lint_development_lead_review_json,
+    next_phase_implementation_turn,
+    render_phase_implementation_turn_summary,
+)
 from asw.phase_preparation import (
     PhaseArtifactPaths,
     build_phase_artifact_paths,
@@ -64,6 +73,7 @@ from asw.validation_contract import (
     render_validation_contract_markdown,
     validation_contract_paths,
 )
+from asw.validation_runner import render_validation_report_markdown, run_validation_contract
 
 _MAX_RETRIES = 2
 _REQUEST_MORE_QUESTIONS_FEEDBACK = (
@@ -500,7 +510,36 @@ def _agent_status_message(agent_name: str, phase_name: str) -> str:
     if phase_name.endswith(" DevOps Proposal"):
         label = phase_name.removesuffix(" DevOps Proposal")
         return f"{display_name} preparing the DevOps proposal for {label}"
+    if phase_name.endswith(" Implementation Plan"):
+        label = phase_name.removesuffix(" Implementation Plan")
+        return f"{display_name} planning the implementation for {label}"
+    if phase_name.endswith(" Implementation Execute"):
+        label = phase_name.removesuffix(" Implementation Execute")
+        return f"{display_name} executing the implementation for {label}"
+    if phase_name.endswith(" Implementation Review"):
+        label = phase_name.removesuffix(" Implementation Review")
+        return f"{display_name} reviewing the implementation for {label}"
     return f"{display_name} working on {phase_name}"
+
+
+def _invoke_agent_with_status(
+    phase_name: str,
+    *,
+    agent_name: str,
+    attempt: int,
+    invoke: Callable[[], str],
+) -> str:
+    """Run an agent call while showing concise progress for the current stage."""
+    status_message = _agent_status_message(agent_name, phase_name)
+    if attempt > 1:
+        status_message = f"Retry {attempt}/{_MAX_RETRIES + 1}: {status_message}"
+
+    if _supports_live_status():
+        with _console.status(status_message, spinner="dots12", spinner_style="cyan"):
+            return invoke()
+
+    print(f"\n>> {status_message}...", flush=True)
+    return invoke()
 
 
 def _invoke_agent_with_progress(
@@ -512,16 +551,48 @@ def _invoke_agent_with_progress(
     attempt: int,
 ) -> str:
     """Run an agent while showing concise progress for the current stage."""
-    status_message = _agent_status_message(agent.name, phase_name)
-    if attempt > 1:
-        status_message = f"Retry {attempt}/{_MAX_RETRIES + 1}: {status_message}"
+    return _invoke_agent_with_status(
+        phase_name,
+        agent_name=agent.name,
+        attempt=attempt,
+        invoke=lambda: agent.run(context, feedback=feedback),
+    )
 
-    if _supports_live_status():
-        with _console.status(status_message, spinner="dots12", spinner_style="cyan"):
-            return agent.run(context, feedback=feedback)
 
-    print(f"\n>> {status_message}...", flush=True)
-    return agent.run(context, feedback=feedback)
+def _invoke_agent_plan_with_progress(
+    agent: Agent,
+    context: dict[str, str],
+    phase_name: str,
+    *,
+    feedback: str | None = None,
+    attempt: int,
+) -> str:
+    """Run an agent planning call while showing concise progress."""
+    return _invoke_agent_with_status(
+        phase_name,
+        agent_name=agent.name,
+        attempt=attempt,
+        invoke=lambda: agent.plan(context, feedback=feedback),
+    )
+
+
+def _invoke_agent_execute_with_progress(
+    agent: Agent,
+    context: dict[str, str],
+    phase_name: str,
+    *,
+    plan: str,
+    feedback: str | None = None,
+    attempt: int,
+    auto_approve: bool = True,
+) -> str:
+    """Run an agent execution call while showing concise progress."""
+    return _invoke_agent_with_status(
+        phase_name,
+        agent_name=agent.name,
+        attempt=attempt,
+        invoke=lambda: agent.execute(context, plan=plan, feedback=feedback, auto_approve=auto_approve),
+    )
 
 
 def _agent_loop(
@@ -1291,6 +1362,352 @@ def _phase_design_input_paths(exec_ctx: PipelineExecutionContext, team_entries: 
     ]
 
 
+def _turn_label(phase_label: str, turn: PhaseImplementationTurn) -> str:
+    """Return a human-readable label for one implementation turn."""
+    return f"{phase_label} Turn {turn.turn_index}"
+
+
+def _standard_paths_for_entry(company: Path, entry: dict) -> list[Path]:
+    """Return standard files assigned to a roster entry."""
+    standards_dir = company / "standards"
+    paths: list[Path] = []
+    for filename in entry.get("assigned_standards", []):
+        if isinstance(filename, str) and filename:
+            paths.append(standards_dir / filename)
+    return paths
+
+
+def _implementation_changed_paths(exec_ctx: PipelineExecutionContext) -> list[str]:
+    """Return changed repo paths excluding `.company` artifacts."""
+    if not is_git_repo(exec_ctx.workdir):
+        return []
+
+    root = repo_root(exec_ctx.workdir)
+    company_rel = exec_ctx.company.resolve().relative_to(root.resolve()).as_posix()
+    return [
+        path
+        for path in worktree_changed_paths(exec_ctx.workdir)
+        if path != company_rel and not path.startswith(f"{company_rel}/")
+    ]
+
+
+def _render_implementation_scope_artifact(
+    phase_label: str,
+    turn: PhaseImplementationTurn,
+    changed_paths: list[str],
+) -> str:
+    """Render a Markdown summary of the changed-path evidence for a turn."""
+    lines = [
+        f"# Scope Evidence: {_turn_label(phase_label, turn)}",
+        "",
+        f"- **Owner:** {turn.owner_title}",
+        f"- **Task IDs:** {', '.join(turn.task_ids)}",
+        "",
+        "## Changed Paths",
+    ]
+    if changed_paths:
+        lines.extend(f"- {path}" for path in changed_paths)
+    else:
+        lines.append("- None.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _implementation_retry_feedback(review: dict[str, object], validation_report: str | None = None) -> str:
+    """Return concrete rerun guidance from review and validation output."""
+    lines: list[str] = []
+    if validation_report is not None:
+        lines.extend(
+            [
+                "Fix the failing command validations before rerunning this same turn.",
+                "",
+                validation_report,
+                "",
+            ]
+        )
+
+    required_follow_up = review.get("required_follow_up", [])
+    if isinstance(required_follow_up, list) and required_follow_up:
+        lines.append("Address the following Development Lead follow-up before rerunning this turn:")
+        lines.extend(f"- {item}" for item in required_follow_up if isinstance(item, str))
+        return "\n".join(lines)
+
+    lines.append(str(review.get("summary", "Revise the turn based on Development Lead feedback.")))
+    for field in ("scope_findings", "standards_findings", "validation_findings"):
+        findings = review.get(field, [])
+        if isinstance(findings, list):
+            lines.extend(f"- {item}" for item in findings if isinstance(item, str))
+    return "\n".join(lines)
+
+
+def _run_development_lead_review(
+    reviewer: Agent,
+    *,
+    phase_label: str,
+    turn: PhaseImplementationTurn,
+    phase_data: dict,
+    phase_design_content: str,
+    plan_content: str,
+    execution_content: str,
+    validation_contract: dict,
+    validation_report: str,
+    scope_artifact: str,
+    review_path: Path,
+    assigned_standards: str,
+) -> tuple[dict[str, object] | None, int | None]:
+    """Run strict Development Lead review for one implementation turn."""
+    review_context = {
+        "implementation_review_request": build_development_lead_review_request(phase_label, turn),
+        "current_phase": json.dumps(phase_data, indent=2),
+        "phase_design": phase_design_content,
+        "scheduled_turn": render_phase_implementation_turn_summary(turn),
+        "implementation_plan": plan_content,
+        "implementation_execution": execution_content,
+        "validation_contract_json": json.dumps(validation_contract, indent=2),
+        "validation_contract_markdown": render_validation_contract_markdown(validation_contract),
+        "validation_report": validation_report,
+        "changed_path_evidence": scope_artifact,
+        "assigned_standards": assigned_standards,
+    }
+
+    for review_attempt in range(1, _MAX_RETRIES + 2):
+        raw_review = _invoke_agent_with_progress(
+            reviewer,
+            review_context,
+            f"{_turn_label(phase_label, turn)} Implementation Review",
+            attempt=review_attempt,
+        )
+        _write_text_artifact(review_path, raw_review)
+        errors, review = lint_development_lead_review_json(raw_review)
+        if not errors and review is not None:
+            return review, None
+
+        if review_attempt > _MAX_RETRIES:
+            print(
+                f"\nError: Development Lead review output stayed invalid for {_turn_label(phase_label, turn)}.",
+                file=sys.stderr,
+            )
+            return None, 1
+
+        review_context = {
+            **review_context,
+            "review_format_feedback": "Return valid JSON only and fix these issues:\n"
+            + "\n".join(f"- {error}" for error in errors),
+            "previous_review_output": raw_review,
+        }
+
+    return None, 1
+
+
+def _run_phase_implementation_turn(  # pylint: disable=too-many-arguments,too-many-locals
+    exec_ctx: PipelineExecutionContext,
+    *,
+    architecture_json: str,
+    execution_plan_json: str,
+    phase_data: dict,
+    phase_label: str,
+    phase_design_content: str,
+    reviewer_entry: dict,
+    paths: PhaseArtifactPaths,
+    turn: PhaseImplementationTurn,
+) -> int | None:
+    """Run plan, execute, validate, review, and commit for one implementation turn."""
+    role_filename = turn.roster_entry.get("filename")
+    if not isinstance(role_filename, str) or not role_filename:
+        raise RuntimeError(f"Roster entry for {turn.owner_title!r} is missing a role filename.")
+
+    owner_agent = Agent(
+        name=turn.owner_title,
+        role_file=exec_ctx.company / "roles" / role_filename,
+        llm=exec_ctx.llm,
+        standards=_standard_paths_for_entry(exec_ctx.company, turn.roster_entry),
+    )
+    reviewer_agent = Agent(
+        name="Development Lead",
+        role_file=exec_ctx.company / "roles" / "development_lead.md",
+        llm=exec_ctx.llm,
+        standards=_standard_paths_for_entry(exec_ctx.company, reviewer_entry),
+    )
+    assigned_standards = _load_assigned_standards_content(
+        exec_ctx.company / "standards",
+        turn.roster_entry.get("assigned_standards", []),
+    )
+    turn_summary = render_phase_implementation_turn_summary(turn)
+    current_phase_json = json.dumps(phase_data, indent=2)
+    baseline_changed_paths = set(_implementation_changed_paths(exec_ctx))
+    feedback: str | None = None
+
+    for attempt in range(1, _MAX_RETRIES + 2):
+        turn_label = _turn_label(phase_label, turn)
+        validation_contract = load_validation_contract(exec_ctx.company) or ensure_validation_contract(exec_ctx.company)
+        validation_contract_json = json.dumps(validation_contract, indent=2)
+        validation_contract_markdown = render_validation_contract_markdown(validation_contract)
+
+        plan_context = {
+            "implementation_plan_request": build_implementation_plan_request(phase_label, turn),
+            "architecture": architecture_json,
+            "execution_plan": execution_plan_json,
+            "current_phase": current_phase_json,
+            "phase_design": phase_design_content,
+            "scheduled_turn": turn_summary,
+            "validation_contract_json": validation_contract_json,
+            "validation_contract_markdown": validation_contract_markdown,
+        }
+        plan_content = _invoke_agent_plan_with_progress(
+            owner_agent,
+            plan_context,
+            f"{turn_label} Implementation Plan",
+            feedback=feedback,
+            attempt=attempt,
+        )
+        _write_text_artifact(paths.implementation_plan_path(turn.turn_index, turn.owner_title, attempt), plan_content)
+
+        execution_context = {
+            "implementation_execute_request": build_implementation_execute_request(phase_label, turn),
+            "architecture": architecture_json,
+            "execution_plan": execution_plan_json,
+            "current_phase": current_phase_json,
+            "phase_design": phase_design_content,
+            "scheduled_turn": turn_summary,
+            "validation_contract_json": validation_contract_json,
+            "validation_contract_markdown": validation_contract_markdown,
+        }
+        execution_content = _invoke_agent_execute_with_progress(
+            owner_agent,
+            execution_context,
+            f"{turn_label} Implementation Execute",
+            plan=plan_content,
+            feedback=feedback,
+            attempt=attempt,
+        )
+        _write_text_artifact(
+            paths.implementation_execution_path(turn.turn_index, turn.owner_title, attempt),
+            execution_content,
+        )
+
+        validation_contract = load_validation_contract(exec_ctx.company) or ensure_validation_contract(exec_ctx.company)
+        validation_report_obj = run_validation_contract(validation_contract, workspace=exec_ctx.workdir)
+        validation_report = render_validation_report_markdown(validation_report_obj, report_title=turn_label)
+        _write_text_artifact(
+            paths.implementation_validation_path(turn.turn_index, turn.owner_title, attempt),
+            validation_report,
+        )
+
+        changed_paths = [path for path in _implementation_changed_paths(exec_ctx) if path not in baseline_changed_paths]
+        scope_artifact = _render_implementation_scope_artifact(phase_label, turn, changed_paths)
+        _write_text_artifact(
+            paths.implementation_scope_path(turn.turn_index, turn.owner_title, attempt), scope_artifact
+        )
+
+        review, err = _run_development_lead_review(
+            reviewer_agent,
+            phase_label=phase_label,
+            turn=turn,
+            phase_data=phase_data,
+            phase_design_content=phase_design_content,
+            plan_content=plan_content,
+            execution_content=execution_content,
+            validation_contract=validation_contract,
+            validation_report=validation_report,
+            scope_artifact=scope_artifact,
+            review_path=paths.implementation_review_path(turn.turn_index, turn.owner_title, attempt),
+            assigned_standards=assigned_standards,
+        )
+        if err is not None:
+            return err
+        assert review is not None  # noqa: S101
+
+        if review["decision"] == "approve" and validation_report_obj.passed:
+            commit_name = f"{phase_data.get('id', f'phase_{turn.turn_index}')}:turn:{turn.turn_index}"
+            approved_paths = changed_paths if not exec_ctx.options.stage_all else None
+            err = _try_commit(
+                exec_ctx.workdir,
+                commit_name,
+                exec_ctx.options.no_commit,
+                stage_all=exec_ctx.options.stage_all,
+                approved_paths=approved_paths,
+            )
+            if err is not None:
+                return err
+            return None
+
+        feedback = _implementation_retry_feedback(
+            review,
+            validation_report=validation_report if not validation_report_obj.passed else None,
+        )
+        print(f"↻ Revising {turn_label} based on review feedback.")
+
+    print(
+        f"\nError: implementation turn failed after {_MAX_RETRIES + 1} attempts: {_turn_label(phase_label, turn)}",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _run_phase_implementation_loop(
+    exec_ctx: PipelineExecutionContext,
+    *,
+    architecture_json: str,
+    execution_plan_json: str,
+    roster_json: str,
+) -> int | None:
+    """Run the owner-turn implementation loop for each prepared phase."""
+    execution_plan = json.loads(execution_plan_json)
+    phases = execution_plan.get("phases", [])
+    if not isinstance(phases, list) or not phases:
+        return None
+
+    print("\n>> Phase implementation loop")
+    for phase_index, phase_data in enumerate(phases):
+        if not isinstance(phase_data, dict):
+            continue
+
+        label = _phase_label(phase_data, phase_index)
+        print(f"\n── Implementing {label} ──")
+        paths = build_phase_artifact_paths(exec_ctx.company, phase_index)
+        if not paths.final_path.is_file() or not paths.task_mapping_json_path.is_file():
+            print(f"\nError: missing phase implementation inputs for {label}.", file=sys.stderr)
+            return 1
+
+        phase_design_content = paths.final_path.read_text(encoding="utf-8")
+        task_mapping = json.loads(paths.task_mapping_json_path.read_text(encoding="utf-8"))
+        team_entries = _phase_team_entries(roster_json, phase_data)
+        reviewer_entry = next((entry for entry in team_entries if entry["title"] == "Development Lead"), None)
+        if reviewer_entry is None:
+            raise RuntimeError(f"Phase team for {label} does not include the Development Lead reviewer.")
+
+        completed_task_ids: set[str] = set()
+        turn_index = 1
+        while True:
+            turn = next_phase_implementation_turn(
+                task_mapping,
+                roster_json,
+                completed_task_ids=completed_task_ids,
+                turn_index=turn_index,
+            )
+            if turn is None:
+                break
+
+            err = _run_phase_implementation_turn(
+                exec_ctx,
+                architecture_json=architecture_json,
+                execution_plan_json=execution_plan_json,
+                phase_data=phase_data,
+                phase_label=label,
+                phase_design_content=phase_design_content,
+                reviewer_entry=reviewer_entry,
+                paths=paths,
+                turn=turn,
+            )
+            if err is not None:
+                return err
+
+            completed_task_ids.update(turn.task_ids)
+            turn_index += 1
+
+    return None
+
+
 def _run_or_skip_phase_design_step(  # pylint: disable=too-many-arguments,too-many-locals
     exec_ctx: PipelineExecutionContext,
     *,
@@ -1976,13 +2393,25 @@ def _is_phase_done(state: dict | None, phase: str, artifact_paths: list[Path], *
     return all(digest is not None and recorded_outputs.get(path) == digest for path, digest in current_outputs.items())
 
 
-def _try_commit(workdir: Path, phase_name: str, no_commit: bool, *, stage_all: bool) -> int | None:
+def _try_commit(
+    workdir: Path,
+    phase_name: str,
+    no_commit: bool,
+    *,
+    stage_all: bool,
+    approved_paths: list[str] | None = None,
+) -> int | None:
     """Attempt a git commit.  Returns an error code on failure, else *None*."""
     if no_commit:
         print("  (skipping git commit – --no-commit)")
         return None
     try:
-        commit_state(workdir, phase_name, stage_all=stage_all)
+        commit_state(
+            workdir,
+            phase_name,
+            stage_all=stage_all,
+            approved_paths=None if stage_all else approved_paths,
+        )
     except GitError as exc:
         print(f"\nError committing {phase_name}: {exc}", file=sys.stderr)
         return 1
@@ -2028,6 +2457,15 @@ def _run_phases(exec_ctx: PipelineExecutionContext) -> int:  # pylint: disable=t
     err = _run_phase_preparation_loop(
         exec_ctx,
         prd_content=prd_content,
+        architecture_json=arch_json,
+        execution_plan_json=execution_plan_json,
+        roster_json=roster_json,
+    )
+    if err is not None:
+        return err
+
+    err = _run_phase_implementation_loop(
+        exec_ctx,
         architecture_json=arch_json,
         execution_plan_json=execution_plan_json,
         roster_json=roster_json,
